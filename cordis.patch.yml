@@ -1,0 +1,29 @@
+# dsh-prompt-prefill bundle patch.
+# 一行 host 插件，注册到当前 profile。安装命令：
+#   dsh plugin --profile desktop add ./dsh-prompt-prefill
+# 下面每一项都是可选的，括号里是默认值。
+- insert:
+    - id: prompt-prefill
+      name: dsh-prompt-prefill
+      config:
+        # 总开关。关闭后不再请求模型，也不再显示幽灵文本。
+        enabled: true
+        # 单次生成的最大输出 token 数。预填充只要一句话，不需要很大。
+        maxOutputTokens: 512
+        # 单次生成的超时时间（毫秒）。超时后回退到兜底提示词。
+        timeoutMs: 20000
+        # 参与上下文的最近消息条数（用户、助手各计一条，键名沿用旧版）。
+        maxRecentTurns: 3
+        # 最近对话文本的总字符预算。
+        maxContextChars: 4000
+        # 单条提示词的字符上限，超出会被截断。
+        maxCandidateChars: 1200
+        # 固定使用的提供方与模型；两者都留空表示跟随当前会话已选模型，
+        # 再回退到 Harness 默认模型。
+        provider: ''
+        model: ''
+        # 模型不可用、超时或会话还没有内容时使用的兜底提示词（依次轮换）。
+        fallbackPrompts:
+          - 请总结一下我们刚才讨论的内容，并给出下一步建议。
+          - 请把上面的结论整理成一份简洁的要点清单。
+          - 请继续，并说明你的判断依据。
