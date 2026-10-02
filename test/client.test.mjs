@@ -947,6 +947,88 @@ console.log('\n多会话隔离')
   check('会话 b 显示自己的候选', env.findGhostNode(env.ghost.flush()) !== null)
 }
 
+console.log('\n切换会话后保留预填内容')
+{
+  const base = { input: { draft: '', phase: 'idle' }, inputActions: { setDraft: () => {} } }
+  const at = (id, running = false) => ({ ...base, sessionId: id, session: { sessionId: id, running } })
+
+  // 同一个组件实例切换 sessionId（a → b → a）。
+  const env = setup()
+  env.ghost.render(at('a'))
+  await settle()
+  check('会话 a 有候选', env.findGhostNode(env.ghost.flush()) !== null)
+  env.ghost.render(at('b'))
+  check('切到 b 不显示 a 的候选', env.findGhostNode(env.ghost.flush()) === null)
+  const back = env.ghost.render(at('a'))
+  check('切回 a 候选还在', env.findGhostNode(back)?.children[0] === '请继续，并说明判断依据')
+  check('切回 a 不重新请求', env.fetchCalls.length === 1, String(env.fetchCalls.length))
+
+  // 组件被卸载、再为同一会话重新挂载。
+  const remount = setup()
+  remount.ghost.render(at('r'))
+  await settle()
+  remount.ghost.flush()
+  remount.ghost.unmount()
+  const again = remount.makeGhost({ primeTurn: false })
+  again.render(at('r'))
+  check('卸载后重新挂载候选还在', remount.findGhostNode(again.flush()) !== null)
+  check('重新挂载不重新请求', remount.fetchCalls.length === 1, String(remount.fetchCalls.length))
+
+  // 请求还没回来就切走：结果照样保存，切回来能看到。
+  const pending = []
+  const inflight = setup({ fetchPlan: () => new Promise((resolve) => pending.push(resolve)) })
+  inflight.ghost.render(at('p'))
+  inflight.ghost.render(at('q'))
+  pending[0]?.({ json: async () => ({ ok: true, candidate: '离开时生成的建议' }) })
+  await settle()
+  const returned = inflight.ghost.render(at('p'))
+  check('切走期间完成的请求切回后可见', inflight.findGhostNode(returned)?.children[0] === '离开时生成的建议')
+
+  // 回答进行中切走，结束后再切回：补生成这一轮的提示词。
+  const away = setup({ primeTurn: false })
+  away.ghost.render(at('w', true))
+  away.ghost.render(at('x'))
+  check('回答中切走时不请求', away.fetchCalls.length === 0, String(away.fetchCalls.length))
+  away.ghost.render(at('w'))
+  await settle()
+  check('回答结束后切回补一次请求', away.fetchCalls.length === 1, String(away.fetchCalls.length))
+  check('补生成的候选可见', away.findGhostNode(away.ghost.flush()) !== null)
+
+  // 原生建议：切回来重新提交，而不是误判成 Escape 关闭。
+  const offered = []
+  const native = setup()
+  const nativeAt = (id, suggestion) => ({
+    sessionId: id,
+    session: { sessionId: id, running: false },
+    input: { draft: '', phase: 'idle', ...(suggestion ? { suggestion } : {}) },
+    inputActions: { setDraft() {}, offerSuggestion: (x) => { offered.push(x); return true }, dismissSuggestion: () => true },
+  })
+  native.ghost.render(nativeAt('n'))
+  await settle()
+  native.ghost.flush()
+  native.ghost.render(nativeAt('n', { id: offered[0]?.id }))
+  native.ghost.render(nativeAt('m'))
+  native.ghost.render(nativeAt('n'))
+  native.ghost.flush()
+  check('原生模式切回后重新提交建议', offered.length === 2 && offered[1].text === offered[0].text, JSON.stringify(offered))
+
+  // 保留数量有上限：超过 50 个会话时，最久没看的被清掉。
+  const many = setup()
+  many.ghost.render(at('s0'))
+  await settle()
+  many.ghost.flush()
+  for (let index = 1; index <= 51; index += 1) {
+    many.ghost.render(at(`s${index}`))
+  }
+  // 回归护栏：超过上限的那一刻，刚切进来的会话不能被当成「离开已久」清掉。
+  many.ghost.render(at('s51', true))
+  many.ghost.render(at('s51'))
+  await settle()
+  check('超过上限时当前会话照常生成', many.findGhostNode(many.ghost.flush()) !== null)
+  const oldest = many.ghost.render(at('s0'))
+  check('超过上限时最久没看的会话被清掉', many.findGhostNode(oldest) === null)
+}
+
 console.log('\nStrictMode 双挂载 / 同会话多实例')
 {
   // 回归护栏：store 用引用计数管理生命周期。若某个实例卸载就清空共享 store，

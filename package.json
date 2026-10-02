@@ -1,6 +1,6 @@
 {
   "name": "dsh-prompt-prefill",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "DeepSeek Harness 插件：在输入框中以灰色幽灵文本预填充一条由当前会话场景动态生成的提示词，按右方向键即可填入草稿。",
   "type": "module",
   "main": "lib/index.js",
