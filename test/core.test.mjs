@@ -9,6 +9,7 @@ import {
   DEFAULT_CONFIG,
   buildUserPayload,
   extractRecentTurns,
+  lastTurnCompleted,
   parseCandidate,
   pickFallback,
   redactSecrets,
@@ -33,6 +34,8 @@ console.log('resolveConfig')
   const defaults = resolveConfig(null)
   check('null 配置回退到默认值', defaults.enabled === true && defaults.maxRecentTurns === 3)
   check('兜底提示词被复制而非共享引用', defaults.fallbackPrompts !== DEFAULT_CONFIG.fallbackPrompts)
+  check('默认不使用兜底句', defaults.useFallback === false)
+  check('可以打开兜底句', resolveConfig({ useFallback: true }).useFallback === true)
 
   const bad = resolveConfig({
     enabled: 'yes',
@@ -233,6 +236,20 @@ console.log('\n工具函数')
   check('truncate 短文本原样返回', truncate('abc', 10) === 'abc')
   check('truncate 长文本加省略号', truncate('abcdef', 3) === 'abc…')
   check('truncate 非法上限返回空串', truncate('abc', 0) === '')
+}
+
+console.log('\nlastTurnCompleted')
+{
+  const user = (text) => ({ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text }] })
+  const assistant = (text) => ({ role: 'assistant', content: [{ type: 'text', text }] })
+  check('助手消息结尾算正常', lastTurnCompleted([user('a'), assistant('b')]) === true)
+  check('用户消息结尾算没收尾', lastTurnCompleted([user('a'), assistant('b'), user('c')]) === false)
+  check('工具结果结尾算没收尾', lastTurnCompleted([user('a'), { role: 'user', source: { kind: 'tool' }, content: [] }]) === false)
+  check('未知角色跳过继续往前看', lastTurnCompleted([user('a'), assistant('b'), { role: 'system', content: [] }]) === true)
+  check('turn/end completed 算正常', lastTurnCompleted([{ type: 'turn/end', data: { reason: { kind: 'completed' } } }]) === true)
+  check('turn/end error 算没收尾', lastTurnCompleted([{ type: 'assistant/message', data: {} }, { type: 'turn/end', data: { reason: { kind: 'error' } } }]) === false)
+  check('turn/end 无 reason 算正常', lastTurnCompleted([{ type: 'turn/end', data: {} }]) === true)
+  check('空历史无从判断时放行', lastTurnCompleted([]) === true && lastTurnCompleted(undefined) === true)
 }
 
 console.log(failures === 0 ? '\n全部通过' : `\n${failures} 项失败`)

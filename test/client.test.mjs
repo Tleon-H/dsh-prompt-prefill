@@ -365,13 +365,32 @@ function setup(options = {}) {
 
   plugin.apply(ctx)
 
-  function makeGhost() {
+  /** 把一份 props 改成「Agent 正在回答」的版本（兼容 session 与 useSession 两种形态）。 */
+  function runningVariant(props) {
+    if (typeof props?.useSession === 'function') {
+      const useSession = props.useSession
+      return { ...props, useSession: (selector) => useSession((state) => selector({ ...state, running: true })) }
+    }
+    return { ...props, session: { ...props?.session, running: true } }
+  }
+
+  /**
+   * @param ghostOptions.primeTurn - 默认 true：首次渲染前先渲染一次「正在回答」，
+   *   模拟「Agent 刚回答完」，因为插件只在回答结束时生成。
+   *   验证「只打开会话不生成」的用例传 false。
+   */
+  function makeGhost(ghostOptions = {}) {
     const instance = { dirty: false, hooks: [] }
     let lastProps
     let lastTree
+    let primed = ghostOptions.primeTurn === false || options.primeTurn === false
     const ghost = {
       component: registrations[0]?.component,
       render(props) {
+        if (!primed) {
+          primed = true
+          ghost.render(runningVariant(props))
+        }
         lastProps = props
         runtime.setActive(instance)
         runtime.resetHooks()
@@ -644,6 +663,87 @@ console.log('\nHarness 原生内联建议（offerSuggestion）')
   check('原生拒绝时不退回自绘浮层', refused.findGhostNode(refusedTree) === null)
 }
 
+console.log('\n只在回答结束时生成（与 Claude Code 一致）')
+{
+  const env = setup({ primeTurn: false })
+  const idle = {
+    sessionId: 'turn',
+    input: { draft: '', phase: 'idle' },
+    inputActions: { setDraft: () => {} },
+    session: { sessionId: 'turn', running: false },
+  }
+  env.ghost.render(idle)
+  await settle()
+  env.ghost.render(idle)
+  check('只打开会话不发请求', env.fetchCalls.length === 0, String(env.fetchCalls.length))
+
+  env.ghost.render({ ...idle, session: { sessionId: 'turn', running: true } })
+  check('回答中不发请求', env.fetchCalls.length === 0, String(env.fetchCalls.length))
+  env.ghost.render(idle)
+  await settle()
+  check('回答结束时发一次请求', env.fetchCalls.length === 1, String(env.fetchCalls.length))
+  check('回答结束后显示候选', env.findGhostNode(env.ghost.flush()) !== null)
+  env.ghost.render(idle)
+  check('重渲染不重复请求', env.fetchCalls.length === 1, String(env.fetchCalls.length))
+
+  // 回答结束时用户已经在打字：先挂着，草稿清空后再生成。
+  const typing = setup({ primeTurn: false })
+  const typed = { ...idle, sessionId: 'typing', session: { sessionId: 'typing', running: true }, input: { draft: '在打字', phase: 'idle' } }
+  typing.ghost.render(typed)
+  typing.ghost.render({ ...typed, session: { sessionId: 'typing', running: false } })
+  check('回答结束时草稿非空先不请求', typing.fetchCalls.length === 0, String(typing.fetchCalls.length))
+  typing.ghost.render({ ...typed, session: { sessionId: 'typing', running: false }, input: { draft: '', phase: 'idle' } })
+  await settle()
+  check('草稿清空后补一次请求', typing.fetchCalls.length === 1, String(typing.fetchCalls.length))
+
+  // 失败后不重试，直到下一轮回答结束。
+  const failing = setup({ primeTurn: false, fetchPlan: async () => ({ json: async () => ({ ok: false, message: '没有候选' }) }) })
+  const f = { ...idle, sessionId: 'fail' }
+  failing.ghost.render({ ...f, session: { sessionId: 'fail', running: true } })
+  failing.ghost.render({ ...f, session: { sessionId: 'fail', running: false } })
+  await settle()
+  failing.ghost.render({ ...f, session: { sessionId: 'fail', running: false } })
+  failing.ghost.render({ ...f, session: { sessionId: 'fail', running: false } })
+  check('失败后同一轮不重试', failing.fetchCalls.length === 1, String(failing.fetchCalls.length))
+  failing.ghost.render({ ...f, session: { sessionId: 'fail', running: true } })
+  failing.ghost.render({ ...f, session: { sessionId: 'fail', running: false } })
+  await settle()
+  check('下一轮回答结束再试一次', failing.fetchCalls.length === 2, String(failing.fetchCalls.length))
+}
+
+console.log('\n按 Tab 采纳')
+{
+  const env = setup()
+  const drafted = []
+  const props = {
+    sessionId: 'tab',
+    input: { draft: '', phase: 'idle' },
+    inputActions: { setDraft: (text) => drafted.push(text) },
+    session: { sessionId: 'tab', running: false },
+  }
+  env.ghost.render(props)
+  await settle()
+  env.ghost.render(props)
+  env.documentStub.activeElement = env.input
+
+  const shiftTab = env.dispatchKey('Tab', { shiftKey: true })
+  check('Shift+Tab 不拦截', drafted.length === 0 && shiftTab.defaultPrevented === false)
+  const tab = env.dispatchKey('Tab')
+  check('Tab 写入候选', drafted.length === 1 && drafted[0] === '请继续，并说明判断依据', JSON.stringify(drafted))
+  check('Tab 的默认行为（切换焦点）被阻止', tab.defaultPrevented === true)
+
+  // 输入框没有聚焦时 Tab 照常切换焦点。
+  const blurred = setup()
+  const blurredDrafts = []
+  const blurredProps = { ...props, sessionId: 'tab-2', session: { sessionId: 'tab-2', running: false }, inputActions: { setDraft: (t) => blurredDrafts.push(t) } }
+  blurred.ghost.render(blurredProps)
+  await settle()
+  blurred.ghost.render(blurredProps)
+  blurred.documentStub.activeElement = blurred.card
+  const away = blurred.dispatchKey('Tab')
+  check('未聚焦时 Tab 不拦截', blurredDrafts.length === 0 && away.defaultPrevented === false)
+}
+
 console.log('\n按 → 采纳（核心验收项）')
 {
   const env = setup()
@@ -837,7 +937,14 @@ console.log('\n多会话隔离')
 
   const second = env.ghost.render({ ...base, sessionId: 'b', session: { sessionId: 'b', running: false, turnEnds: [{ endSeq: 9 }] } })
   check('切到会话 b 时不显示 a 的候选', env.findGhostNode(second) === null)
-  check('切到会话 b 后发起了新请求', env.fetchCalls.length === 2, String(env.fetchCalls.length))
+  check('只是切到会话 b 不发请求', env.fetchCalls.length === 1, String(env.fetchCalls.length))
+
+  // 会话 b 有一轮回答结束后才生成。
+  env.ghost.render({ ...base, sessionId: 'b', session: { sessionId: 'b', running: true } })
+  env.ghost.render({ ...base, sessionId: 'b', session: { sessionId: 'b', running: false } })
+  await settle()
+  check('会话 b 回答结束后发起新请求', env.fetchCalls.length === 2, String(env.fetchCalls.length))
+  check('会话 b 显示自己的候选', env.findGhostNode(env.ghost.flush()) !== null)
 }
 
 console.log('\nStrictMode 双挂载 / 同会话多实例')
@@ -1060,7 +1167,8 @@ console.log('\n锁定、取消、卸载与共享状态回归')
   replayed.ghost.unmount()
 
   const shared = setup()
-  const other = shared.makeGhost()
+  // 第二个实例与第一个看到同一个会话状态，不需要再模拟一次「正在回答」。
+  const other = shared.makeGhost({ primeTurn: false })
   shared.ghost.render(props)
   other.render(props)
   await settle()

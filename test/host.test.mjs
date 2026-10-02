@@ -44,7 +44,9 @@ function makeHarness(options = {}) {
     webServer,
   }
 
-  apply(ctx, options.config ?? {})
+  // 既有用例检验兜底轮换本身，因此在测试里显式打开 useFallback；
+  // 默认关闭时的行为由「默认不用兜底句」一节单独覆盖（传 useFallback: false）。
+  apply(ctx, { useFallback: true, ...options.config })
   return {
     warnings,
     infos,
@@ -324,6 +326,54 @@ console.log('\n兜底路径')
   })
   const noRouteReply = await (await invoke(noRoute, { sessionId: 's1' })).reply()
   check('没有模型路由时走兜底', noRouteReply.ok === true && noRouteReply.source === 'fallback', JSON.stringify(noRouteReply))
+}
+
+console.log('\n默认不用兜底句（与 Claude Code 一致）')
+{
+  const quiet = makeHarness({ config: { useFallback: false }, services: { sessions: fakeSessions([]) } })
+  const reply = await (await invoke(quiet, { sessionId: 's1' })).reply()
+  check('默认失败时不返回候选', reply.ok === false && reply.candidate === undefined, JSON.stringify(reply))
+  check('默认失败时说明原因', reply.code === 'NO_CANDIDATE' && typeof reply.message === 'string', JSON.stringify(reply))
+
+  // 不经过测试 harness 的默认值：直接用空配置调用 apply。
+  let route
+  apply({
+    logger: { info() {}, warn() {} },
+    effect() {},
+    get: (serviceName) => (serviceName === 'webServer'
+      ? { register: (next) => { route = next; return () => {} } }
+      : serviceName === 'sessions' ? fakeSessions([]) : undefined),
+  }, {})
+  const exchange = makeExchange({ sessionId: 's1' })
+  const task = Promise.resolve(route.handler(exchange.request, exchange.response))
+  exchange.request.send({ sessionId: 's1' })
+  await task
+  check('空配置下默认关闭兜底', (await exchange.reply()).code === 'NO_CANDIDATE', exchange.response.body)
+}
+
+console.log('\n上一轮没有正常结束时跳过')
+{
+  let calls = 0
+  const llm = fakeLlm([{ type: 'text-delta', text: '请继续\n' }], () => { calls += 1 })
+  const header = { requestHeader: () => ({ config: { provider: 'p', model: 'm' } }) }
+
+  // 最后一条是用户消息：助手没有给出回复（出错或被中断）。
+  const unanswered = makeHarness({ services: { sessions: fakeSessions(turns('你好', '你好呀', '再写一个'), header), llm } })
+  const skipped = await (await invoke(unanswered, { sessionId: 's1' })).reply()
+  check('助手没回复时跳过', skipped.ok === false && skipped.code === 'SKIPPED', JSON.stringify(skipped))
+  check('跳过时不用兜底句', skipped.candidate === undefined)
+  check('跳过时不调用模型', calls === 0, String(calls))
+
+  // 旧式事件：turn/end 的 reason 不是 completed。
+  const failedEvents = [...turns('你好', '你好呀'), { type: 'turn/end', data: { reason: { kind: 'error' } } }]
+  const failed = makeHarness({ services: { sessions: fakeLegacySessions(failedEvents, header), llm } })
+  const failedReply = await (await invoke(failed, { sessionId: 's1' })).reply()
+  check('turn/end 报错时跳过', failedReply.code === 'SKIPPED', JSON.stringify(failedReply))
+
+  const okEvents = [...turns('你好', '你好呀'), { type: 'turn/end', data: { reason: { kind: 'completed' } } }]
+  const completed = makeHarness({ services: { sessions: fakeLegacySessions(okEvents, header), llm } })
+  const completedReply = await (await invoke(completed, { sessionId: 's1' })).reply()
+  check('正常结束时照常生成', completedReply.ok === true && completedReply.source === 'model', JSON.stringify(completedReply))
 }
 
 console.log('\n模型生成')
