@@ -1,330 +1,50 @@
 # dsh-prompt-prefill
 
-DeepSeek Harness 桌面端插件：**Agent 回答结束后，在输入框里以灰色文字预填充一条提示词，按 `Tab` 或 `→` 即可把它写进草稿；输入框为空时按 `↑`，填入这个会话里上一次发送的内容。**
+DeepSeek Harness（DSH）桌面端插件，给输入框加两个小功能：
 
-提示词不是写死的模板，而是根据**当前会话的最近对话**动态生成的一条「你接下来最可能想发」的消息。
+- **→ / Tab：采纳建议的下一句。** Agent 回答完后，输入框里出现一条浅灰色的提示词——根据当前会话最近的对话，猜你接下来最可能想说的话。按 `Tab` 或 `→` 把它填进草稿。
+- **↑：填入上一次发送的内容。** 输入框为空时按 `↑`，填入这个会话里你上一次发出的消息，改一改再发。
 
-实现评估、修复范围和仍需真机验证的限制见 [IMPLEMENTATION_REVIEW.md](./IMPLEMENTATION_REVIEW.md)。
-
----
-
-## 效果
+两者都**只填进输入框，不会自动发送**，也不调用工具、不绕过任何权限审批。
 
 ```
 ┌─ 输入框（草稿为空） ─────────────────────────────────────┐
-│ 请把时间复杂度降到 O(n log n)，并补一组边界测试          │  ← 浅灰色，不是草稿
+│ 请把方案拆成三步，并标出每步的负责人                    │  ← 浅灰色，还不是草稿
 └──────────────────────────────────────────────────────────┘
-                          ↑ 按 → 之后
+                          ↓ 按 Tab 或 → 之后
 ┌─ 输入框（已写入草稿） ───────────────────────────────────┐
-│ 请把时间复杂度降到 O(n log n)，并补一组边界测试|         │  ← 正常文字，可编辑
+│ 请把方案拆成三步，并标出每步的负责人|                   │  ← 正常文字，可以编辑
 └──────────────────────────────────────────────────────────┘
 ```
 
-| 场景 | 行为 |
-| --- | --- |
-| Agent 回答结束、草稿为空 | 自动请求一次，并在输入框内显示灰色提示词；是否生成以**宿主监听到的 `turn/end`** 为准，同一回合只生成一次 |
-| 只打开或翻看会话 | **不请求**（与 Claude Code 一致，避免白白调用模型） |
-| 回答结束时草稿不为空 | 先不请求，草稿清空后补一次 |
-| 草稿为空且输入框聚焦时按 `Tab` 或 `→` | 提示词经宿主 `setDraft` 写入草稿，**不发送**；撤销行为取决于编辑器实现 |
-| 输入框里已有任何文字 | 灰色提示词立即隐藏，`Tab` / `→` 交还给原生行为 |
-| 按 `Escape` | 关闭灰色提示词 |
-| 草稿为空且输入框聚焦时按 `↑` | 填入**这个会话里上一次发送的内容**，**不发送**；不需要先有灰色提示词，Agent 回答中也可用 |
-| 输入框里有文字时按 `↑` | 不拦截，交给原生光标移动（DSH 的 `/`、`@` 菜单也只在有文字时使用 `↑`，互不冲突） |
-| 带 `Shift/⌘/Ctrl/Alt` 的 `↑`、输入法组合中、长按重复 | 不拦截 |
-| `↑` 回填的内容 | 只恢复文字，图片附件不恢复；会话还没发过消息时什么都不做 |
-| 带 `Shift/⌘/Ctrl/Alt` 的 `→` / `Tab` | 不拦截，保留选区操作与 `Shift+Tab` 反向切换焦点 |
-| 输入法组合输入中（`isComposing`） | 不拦截 |
-| Agent 正在回答 | 不请求、不显示 |
-| 输入处于 `submitting` / `adjudicating` / `claimed` | 不生成、不显示、不采纳已有候选，`↑` 也不回填 |
-| 上一轮出错或被中断 | 不请求模型、不显示（以 `turn/end` 的结束原因为准：`error`、`aborted`、`max-tokens`、`interrupted` 等都跳过） |
-| 模型不可用 / 超时 / 新会话无历史 | 默认不显示；打开 `useFallback` 才显示兜底提示词 |
-| 同一轮生成失败 | 不重试，等下一轮回答结束 |
-| 切换到别的会话再切回 | 之前预填的提示词**保留**，不重新请求；切走期间完成的请求切回后可见。最多保留 50 个会话，超出时清掉最久没看的 |
-
-**不会自动发送消息，不调用工具，不绕过任何权限审批。**
+适用版本：DSH 桌面端 **0.2.0-rc.2**（在这个版本上实测通过）。
 
 ---
 
-## 文件结构
+## 安装与更新
 
-```
-dsh-prompt-prefill/
-├── package.json          插件清单：入口、exports、dsh 字段（bundle patch 与 client 平台）
-├── cordis.patch.yml      profile 补丁：插件行与全部可配置项（含中文注释）
-├── LICENSE               MIT
-├── README.md             本文件
-├── lib/
-│   ├── core.js           宿主半共享的纯逻辑（配置归一化、脱敏、上下文提取、候选清洗、兜底轮换）
-│   ├── index.js          宿主半：注册 RPC 路由、读会话历史、调用 ctx.llm 生成提示词
-│   └── client.js         浏览器半：幽灵文本浮层、按 → 采纳、显隐时机、样式注入
-└── test/
-    ├── core.test.mjs     纯逻辑单测：脱敏、上下文截断、候选清洗
-    ├── host.test.mjs     宿主半单测：路由校验、模型调用、超时与降级路径
-    └── client.test.mjs   浏览器半单测：模拟 DOM/hooks、取消和组件生命周期
-```
+### 安装
 
-### 各文件职责
-
-| 文件 | 用途 |
-| --- | --- |
-| `lib/core.js` | 与 Harness 无关的纯函数。独立出来是为了让最易出错的边界（脱敏、截断、`NONE` 处理、兜底轮换）能被直接测到。 |
-| `lib/index.js` | 宿主半。订阅 `session/event` 跟踪每个会话的 `turn/start` / `turn/end`，RPC `method: 'suggestion'` 按回合号按需生成并缓存建议。RPC 同时提供 `method: 'lastSent'`：只读会话历史，返回最后一条真人消息原文，供 `↑` 回填，不调用模型。暴露 `name` / `apply`，经 `ctx.get('webServer')` 注册 `/dsh-prompt-prefill/rpc`；首选会话的 `deriveMessages()` 取最近对话，兼容 `snapshotEvents()`；用 `ctx.get('llm').stream(...)` 生成候选。 |
-| `lib/client.js` | 浏览器半。经 `window.__ModuleLoader__.load` 注册，用 `ctx.slots.inject('conversation.input.overlay', ...)` 把浮层挂进 composer 卡片内部。 |
-| `test/client.test.mjs` | 自带微型 React（真的执行 hooks）与微型 DOM，因此能断言「按 → 确实调用了 `inputActions.setDraft`」。 |
-
----
-
-## 关键实现点
-
-### 1. 为什么是自己画浮层，而不是用原生内联建议
-
-本版 Harness（`0.2.0-rc.2`）**没有**可用的内联 ghost text / suggestion API。我在发行版 `D:\DeepSeek Harness\resources\app.asar` 中检索过 `ghostText`、`inlineSuggestion`、`setSuggestion`、`acceptSuggestion`、`ghost-text` 等关键字，均无命中（唯一命中的 `variant: "ghost"` 是 Button 的样式变体，与输入建议无关）。
-
-参考项目 [dsh-prompt-for-me](https://github.com/ChuanTianML/prompt-for-me) 的 README 也印证了这一点：
-
-> 新版 Harness 使用输入框内联 ghost text；较旧客户端使用一张不修改草稿的轻量预览卡片。
-
-所以本插件走的是后者思路，但把预览做得**与输入框逐像素对齐**，视觉上等价于内联幽灵文本。
-
-### 2. 幽灵文本如何做到像素对齐
-
-浮层只在**草稿为空**时出现，此时插入点必然在内容区左上角。于是只需：
-
-1. 用 `[data-composer-card]` → `querySelector('[data-composer-input]')` 找到同卡片内的输入容器；
-2. 把该输入容器计算样式里影响排版的属性（字体、行高、内边距、边框宽度、`box-sizing` 等）逐一复制到浮层；
-3. 用 `getBoundingClientRect()` 以 `position: fixed` 定位、同宽同高。
-
-用 `position: fixed` 而不是 `absolute` 是刻意的：输入框位于一个 `overflow-y: auto` 的滚动容器内，若用 `absolute`，浮层会随容器一起滚动、并可能被裁剪；`fixed` + 每次 `getBoundingClientRect()` 重新对齐则天然避开这两点。
-
-并监听 `resize` 与 `scroll`（捕获阶段，覆盖任意滚动容器），以及 `ResizeObserver`，保证布局变化后重新对齐。
-
-浮层由槽位机制渲染进 composer 卡片内的 `.overlayAnchor`（`height: 0; position: absolute; inset: 0 0 auto`），而输入框本身在一个 `overflow-y: auto` 的滚动容器里。这就是必须用 `fixed` + 实时测量、而不能用纯 CSS 贴合的根因。
-
-**同时要抑制 Harness 自带的输入提示**：草稿为空时，Harness 自己会在同一位置渲染 `<div data-composer-placeholder>` 以及一段 `p:last-child:after { content: var(--dsh-composer-hint) }`。若不处理，两者会**叠字**。做法是幽灵文本可见时给输入框加 `data-dsh-prompt-prefill="on"`，由样式表隐藏这两处提示；收起时立即摘掉该属性，把原生提示还给用户。
-
-### 3. 右方向键的采纳逻辑与冲突处理
-
-这是需求里最需要小心的一点。`→` 在文本框里**原生就有意义**（光标右移 / 取消选区），所以插件只在**完全不可能有冲突**时才拦截：
-
-```js
-if (event.key !== 'ArrowRight') return
-if (event.defaultPrevented || event.isComposing || event.repeat) return
-if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return  // 带修饰键 → 是别的操作
-const input = findComposerInput(anchorRef.current)
-if (input === null) return
-const focused = document.activeElement
-if (focused !== input && !input.contains(focused)) return      // 必须聚焦在这个输入框（含子节点）
-if (!domIsEmpty(input) || draft !== '') return                 // 必须完全为空
-if (running || removed || inputLocked(inputSnapshot)) return // 会话和输入必须可编辑
-event.preventDefault(); event.stopPropagation()
-actions.setDraft(candidate)
-```
-
-> **⚠️ 一个真实存在的坑（本插件已处理）**：DSH 的 composer 输入框**不是 `<textarea>`**，而是 Lexical 驱动的 `contentEditable` 容器：
->
-> ```html
-> <div data-composer-input contenteditable="true" role="textbox" aria-multiline="true">…</div>
-> ```
->
-> 它的 `.value` 恒为 `undefined`，文本在 `.textContent` 里。如果按 textarea 的习惯写 `if (input.value !== '' ) return`，就会得到 `undefined !== ''` → **永远判定为「非空」→ 右方向键永远不生效**。同理，Lexical 常常把焦点放在输入容器的**子节点**上，只用 `document.activeElement === input` 判断聚焦也会漏判。
->
-> 因此代码里用 `domTextOf()`（`<textarea>` 读 `.value`，contentEditable 读 `.textContent`）判空，并用 `input.contains(focused)` 兜住子节点焦点。`test/client.test.mjs` 专门有「contentEditable 输入框（真实 DSH 形态）」一节做回归覆盖。
-
-**冲突点与处理建议**（对应需求里的「边界情况」）：
-
-- **有文字时的 `→`**：光标移动是用户高频操作，抢占它会让输入变得不可预测。本插件选择**完全不拦截**——只有在输入框为空时 `→` 才无原生意义，此时拦截零冲突。
-- **`Shift+→` 选字**：同样不拦截。需要「有文字时也能一键追加提示词」的话，建议改用 `Tab`，而不是扩宽 `→` 的拦截范围。
-- **捕获阶段 vs 冒泡阶段**：监听器挂在 `window` 的**捕获阶段**（第三个参数 `true`），确保先于输入框的默认行为执行，从而能可靠地 `preventDefault()`。
-- **DSH 自身的输入触发器**：`ctx.inputTriggers`（`/`、`@` 菜单）走的是自己的仲裁链，不会在空输入框上占用 `→`，因此不构成冲突。
-
-### 3.1 只使用槽位**文档化**的标准 props
-
-`conversation.input.overlay` 通过 `Slots.listSubTree` 公布的标准属性是：
-
-```
-useInput: SnapshotSelectorHook<InputState>
-inputActions: InputActions
-useSession: SessionSnapshotSelector
-sessionId: SessionId
-```
-
-两个容易写错的地方，本插件都已规避：
-
-| 陷阱 | 事实 | 本插件的做法 |
-| --- | --- | --- |
-| 以为有裸的 `props.session` | 标准属性里只有 **`useSession` 选择器**与 `sessionId`，没有裸对象 | 用 `props.useSession((s) => s)` 取会话快照；同时兼容测试/旧版的 `props.session` |
-| 以为会话快照有 `turnEnds` | `SessionSnapshot` 字段为 `sessionId / running / removed / blank / awaitingFirstTurn / …`，**没有 `turnEnds`** | 不依赖轮次序号；用 `running` 的跳变（`true → false`）判定「一轮结束」并重置尝试标记 |
-
-`InputState` 提供 `draft`（草稿文本）与 `phase`（`idle` / `adjudicating` / `submitting`）；`submitting` 与 `adjudicating` 期间不生成、不展示。
-
-### 3.2 宿主半：**不要读 `session.events`**（这是一个真实踩过的坑）
-
-本插件第一版读的是 `session.events`。**DSH 的 `Session` 类根本没有 `events` 属性** —— 官方声明只有：
-
-```ts
-eventAt(seq)                          // @deprecated
-snapshotEvents(fromSeq?, toSeqExclusive?)  // @deprecated
-ownEvents()                           // @deprecated
-deriveMessages(): Message[]           // ← 未废弃，且已应用消息投影
-```
-
-后果是**静默失效**：`session.events` → `undefined` → 历史恒为空 → 每次都走兜底提示词，
-`llm.stream` **永不执行**。插件不报错、幽灵文本照常显示，所以「看起来能用，其实永远是那几句固定话术」。
-
-更糟的是测试把它掩盖了：当时的 fake 返回 `{ events }`，于是测试全绿而线上功能为零。
-**测试通过 ≠ API 正确**——fake 必须复刻真实形状。
-
-现在的做法：
-
-- 首选 `session.deriveMessages()`。它是唯一未被标记 `@deprecated` 的历史读取器
-  （官方 Agent Note *2026-09-09-deprecate-synchronous-session-event-reads* 明确
-  「new production calls are prohibited」），且从 surface 派生、已应用 compaction/fork 投影，
-  语义上正是我们要的「模型实际看到的对话」。
-- 退路：若某版本只提供 `snapshotEvents()`，仍可工作（`extractRecentTurns` 同时接受
-  `Message` 与 `SessionEvent` 两种形状）。
-- `host.test.mjs` 的 fake 现在**只暴露 `deriveMessages()`，刻意不提供 `events`**，
-  任何「再回去读 `session.events`」的回归都会立刻被测出来（已用变异测试确认：
-  把实现改回去会触发 8 项失败）。
-
-### 4. 提示词从哪来（配置方式）
-
-三级优先：
-
-1. **显式配置**：`cordis.patch.yml` 里同时填 `provider` 与 `model`；
-2. **当前会话已选模型**：`session.requestHeader()?.config`；
-3. **Harness 默认模型**：`ctx.get('agentDefaultModel').currentSelection()`。
-
-默认（两者留空）复用的就是你在 DSH 里已经配好的模型和 API Key —— **插件自己不需要任何凭据，浏览器也拿不到 Key**（生成发生在宿主半）。
-
-发给模型的上下文只包含：当前草稿（通常为空）+ 最近 `maxRecentTurns` **条**真人/助手消息文本。该配置沿用旧名称，按消息数量计数，不按完整问答对计数。长的新消息会截断保留，不会被短的旧消息替换。
-
-送出前做模式脱敏，覆盖 `sk-…`、JSON/YAML/环境变量中的 `api_key`、`token`、`password`、`secret`，以及 `Bearer …`。模式脱敏不保证识别任意格式的敏感信息。
-
-出站请求用 `RequestUserInput` 形状（`{ role:'user', content:[…] }`，不带 `id`、不带 `source`）。
-早先写的是 `source: { kind:'plugin' }`，但 `MessageSourceMap` 里**没有 `plugin` 这个 kind**
-（那是已废弃的 V3 遗留形状，只在读取旧日志时被迁移），类型上不合格。
-
-### 4.1 RPC 端点的信任边界
-
-`/dsh-prompt-prefill/rpc` 接受本机的请求，校验包括：
-
-1. 实际 TCP 对端必须是回环地址，避免远端调用者伪造 `Host`；
-2. `Host` 必须是**回环地址**（`127.0.0.0/8`、`localhost`、`::1`）；
-3. 附带的 `Origin` 必须与实际 HTTP/HTTPS 连接协议及 Host **精确同源**（含端口）；
-4. `Sec-Fetch-Site: cross-site` 一律拒绝。
-
-之所以在「无 Origin」时放行：桌面端 Electron 会把 `dsh-app://app/…` 的请求转发到回环 webServer，
-并在转发前**删掉** `origin` / `host` / `sec-fetch-site`（见 `forwardWebRequest`），
-所以端点通常看不到 Origin。测试覆盖的是这一请求头和回环连接的模拟形态；真实 Electron 转发仍需在 Harness 内验证。本机反向代理的上游连接也属于本机请求，本插件未实现用户级鉴权。
-
-### 5. 空提示词 / 未配置时的表现
-
-与 Claude Code 一致，默认**宁可不显示，也不给一句千篇一律的泛泛建议**。下表「失败」一列指默认（`useFallback: false`）的表现；打开 `useFallback` 后这些情况改为显示兜底提示词：
-
-| 情况 | 表现 |
-| --- | --- |
-| `enabled: false` | 不调用模型、不显示；客户端每轮回答结束最多仍会发一次 RPC，取得关闭态 |
-| 上一轮出错或被中断（最后一条不是助手消息，或 `turn/end` 不是 `completed`） | 返回 `SKIPPED`，**不调用模型、也不用兜底句** |
-| 新会话还没有任何对话 | 不显示，**不浪费一次模型调用** |
-| 模型返回 `NONE` 或空 | 不显示 |
-| 模型不可用 / 没有模型路由 | 不显示 |
-| 超时（默认 20s） | 不显示 |
-| RPC 请求失败 / 网络异常 | 界面保持无候选，不影响草稿编辑 |
-
-打开 `useFallback` 时，兜底提示词按游标**轮换**（而不是随机）；`fallbackPrompts` 为空数组时回退到内置三条默认值。
-
----
-
-## 安装与启用
-
-> 目标 profile 是桌面端：`desktop`。插件源码位于 `E:\SynologyDrive\AIWorkplace\dsh-prompt-prefill`。
-
-### 方式一：本地目录安装（推荐，便于随时改）
+推荐从本地目录安装，改代码后不用重新安装（DSH 链接到这个目录，直接运行这里的代码）：
 
 ```powershell
 dsh plugin --profile desktop add "E:\SynologyDrive\AIWorkplace\dsh-prompt-prefill"
 ```
 
-### 方式二：手工放入 profile 的 local-plugins
-
-把整个 `dsh-prompt-prefill` 目录复制到：
-
-```
-C:\Users\<你>\.dsh\profiles\desktop\local-plugins\dsh-prompt-prefill
-```
-
-（该目录下已有一个同结构的 `dsh-optimize` 可作参照。）
-
-### 方式三：从 Git 安装
+也可以从 GitHub 安装。仓库是私有的，需要这台电脑的 Git 已登录 GitHub：
 
 ```powershell
-dsh plugin --profile desktop add github:<你的账号>/dsh-prompt-prefill
+dsh plugin --profile desktop add github:Tleon-H/dsh-prompt-prefill
 ```
 
-### 启用与生效
+装完后**完全退出 DSH（包括托盘图标）再重新打开**。
 
-1. 确认插件已在 profile 中启用（`cordis.patch.yml` 会插入 `prompt-prefill` 这一行）：
+> 安装前先完全退出 DSH：桌面端开着时，安装命令要排队等它释放 profile 的文件锁，最多等 2 分钟。
 
-   ```powershell
-   dsh plugin --profile desktop list
-   ```
+### 更新
 
-2. **重启桌面端**（`dsh plugin add` 之后需要重启才加载新的宿主半）。
-3. 打开任意一个**已有若干轮对话**的会话：输入框为空时会先短暂无内容，随后出现灰色提示词。
-4. 想看宿主半日志，搜索 `dsh-prompt-prefill:` 前缀。
-
-### 排查：输入框里完全没有灰字
-
-1. 按 `Ctrl+Shift+I` 打开开发者工具，切到 **Console**，搜索 `dsh-prompt-prefill`：
-   - 看到「RPC 路由不存在（404）」：宿主半没注册上，确认插件已启用并**完全退出后重启**桌面端；
-   - 看到其他「没有拿到提示词：…」：按提示的原因处理；
-   - 什么都没有：浏览器半没有加载，检查 `dsh plugin --profile desktop list` 里插件是否启用。
-2. 宿主半日志搜索 `dsh-prompt-prefill:`，正常应有一条「已注册 /dsh-prompt-prefill/rpc」。
-
-> 0.1.1 修复：旧版宿主半在 `apply` 时直接 `ctx.get('webServer')`，若该服务尚未就绪就放弃注册，
-> 导致浏览器半请求一律 404、界面上完全没有灰字。现改为 `ctx.inject(['webServer'], …)` 等服务就绪后再注册。
-> 同时：若 Harness 提供原生内联建议（`inputActions.offerSuggestion`），优先交给原生显示与采纳（Tab / →），
-> 不再自绘浮层；没有时才退回自绘浮层。
-
-### 排查：回答完有时不出灰字
-
-插件会为最近 20 次生成留下记录（只在内存里，重启清空），每次也写一行宿主日志（前缀 `dsh-prompt-prefill: 生成`）。
-在 DSH 里按 `Ctrl+Shift+I` → **Console**，粘贴下面这行回车即可查看：
-
-```js
-fetch('/dsh-prompt-prefill/rpc',{method:'POST',headers:{'content-type':'application/json'},body:'{"method":"diagnostics"}'}).then(r=>r.json()).then(d=>console.table(d.recent))
-```
-
-| `result` | 含义 | 处理方向 |
-| --- | --- | --- |
-| `model` | 正常生成（`trigger: turn-end` 表示由宿主监听的回合结束触发） | — |
-| `NO_TURN` | 浏览器半来要建议，但宿主 8 秒内没有收到新的 `turn/end` | 偶发可忽略；频繁出现说明宿主没收到回合事件，把诊断结果发给维护者 |
-| `SKIPPED` | 上一轮没有正常结束；`detail` 写明 `turn/end` 的结束原因（旧宿主上写明依据的是哪条消息） | 原因是 `error` / `aborted` 等属正常跳过；若回答其实正常结束，把 `detail` 发给维护者 |
-| `NO_CANDIDATE` + 「模型没有给出可用的提示词」 | 模型回了 `NONE` 或空；`detail` 里有正文开头与片段统计 | 只有 `reasoning-*` 片段、正文 0 字时，多半是推理模型把 `maxOutputTokens` 用光了，可调大或在配置里固定一个非推理模型 |
-| `NO_CANDIDATE` + 「生成超时」 | 超过 `timeoutMs` | 调大 `timeoutMs` 或换更快的模型 |
-| `NO_CANDIDATE` + 「请求已取消」 | 生成途中 Agent 又开始回答或切换了会话 | 正常现象 |
-| 记录里**没有**这一次 | 浏览器半没有发出请求：Console 里也看不到「回答结束，开始请求提示词」 | 说明没检测到回答结束，需要进一步排查 |
-
-> 0.4.2：**DSH 不会为模型调用失败抛错**，而是返回 `finish` 片段，`reason` 为
-> `{ kind: 'error', failure: { message, code } }`（包括调用前就被拒绝的 `UNSUPPORTED_REASONING_EFFORT`）。
-> 旧代码把它当成普通结束，于是表现为「正文 0 字、只有 finish、耗时几毫秒」，去掉 `reasoningEffort` 重试的逻辑
-> 也从未触发——不支持关闭思考的模型（例如实测的 `workbuddy/glm-5.3-flash`）因此永远拿不到提示词。
-> 现在把 error finish 转成真正的错误：不支持关闭思考时去掉该参数重试一次；其他错误把错误码与原因写进诊断。
->
-> 0.4.1：DSH 按范围过滤派发 `session/event`。若宿主一次都没收到某个会话的事件（说明事件没有送到本插件），
-> 回答结束时不再干等 `turn/end`，立刻退回 0.3.1 的做法（按末尾消息判断）。诊断结果的 `eventsReceived`
-> 是宿主总共收到的事件数，为 0 说明事件完全没有送达。
->
-> 0.4.0：改由**宿主监听回合结束**。宿主订阅 DSH 的 `session/event`，为每个会话记下最近一次
-> `turn/end` 的回合号与结束原因；浏览器半在回答结束时带上「已看过的回合号」来要建议，宿主以 `turn/end`
-> 判断是否正常完成（不再按末尾消息推断），同一回合只生成一次并缓存，新回合开始（`turn/start`）时作废上一轮。
-> 生成是按需的：回合结束只记账，浏览器半来要时才调模型，DSH 里用户看不到的会话（如后台子任务）不会白白花钱。
-> 浏览器半偶尔先于宿主察觉回答结束时，宿主最多等 8 秒让 `turn/end` 到达。宿主没有回合事件时自动退回旧做法。
-> 诊断结果的 `trigger` 字段写明当前使用哪种方式。
->
-> 0.3.1：DSH 会在回答结束后以用户角色插入切换模型、压缩上下文、goal、schedule、子任务完成等消息。
-> 旧规则把「最后一条是用户角色」一律当成上一轮没收尾，导致正常结束的回答也被跳过。现在只有真人输入、
-> 工具结果、对提问的回答、对工具调用的批准排在最后时才跳过。
+- **本地目录安装**：代码改完后，**等 Synology Drive 同步完成，再完全退出并重开 DSH**。顺序不能反——先重启、后同步，DSH 跑的仍是旧代码。可以用[诊断](#诊断记录)结果里的 `version` 确认新代码是否生效。
+- **GitHub 安装**：先 `dsh plugin --profile desktop remove dsh-prompt-prefill`，再重新 `add`。
 
 ### 卸载
 
@@ -334,93 +54,245 @@ dsh plugin --profile desktop remove dsh-prompt-prefill
 
 ---
 
-## 配置项
+## 用法
 
-全部写在 `cordis.patch.yml`（profile patch 层同样可覆盖）：
+### → / Tab：建议的下一句
 
-| 键 | 默认值 | 说明 |
-| --- | --- | --- |
-| `enabled` | `true` | 总开关。 |
-| `maxOutputTokens` | `512` | 单次生成的最大输出 token 数。 |
-| `timeoutMs` | `20000` | 超时（毫秒）。 |
-| `maxRecentTurns` | `3` | 最近消息条数；沿用旧名称，用户和助手各计一条。 |
-| `maxContextChars` | `4000` | 最近对话文本总字符预算。 |
-| `maxCandidateChars` | `1200` | 单条提示词字符上限，超出截断。 |
-| `provider` / `model` | `''` | 同时填写才生效；留空表示跟随会话/默认模型。 |
-| `useFallback` | `false` | 生成失败时是否显示兜底提示词。默认关闭，失败就不显示。 |
-| `fallbackPrompts` | 三条中文默认 | `useFallback` 打开时使用的兜底提示词，按游标轮换。 |
+| 情况 | 插件的反应 |
+| --- | --- |
+| Agent 回答结束、输入框为空 | 请求一次，几秒内出现灰色提示词 |
+| 只是打开或翻看会话 | **不请求**，不花钱 |
+| 回答结束时你已经在打字 | 先不请求，清空输入框后补一次 |
+| 输入框为空且有焦点时按 `Tab` 或 `→` | 把提示词填进草稿，不发送 |
+| 开始打字 | 灰字立即隐藏，`Tab` / `→` 恢复原本的作用；删空后灰字重新出现，不再请求模型 |
+| 按 `Escape` | 关闭这一轮的灰字 |
+| 切到别的会话再切回来 | 之前的灰字还在，不重新请求 |
+| Agent 正在回答 | 不显示 |
+| 上一轮出错、被中止或输出达到上限 | 跳过，不调用模型 |
+| 模型回答不出合适的建议（返回 `NONE`）、超时或出错 | 默认什么都不显示（可打开 `useFallback` 改为显示兜底句） |
+
+同一回合只生成一次，失败了也不重试，等下一轮回答结束。
+
+### ↑：上一次发送的内容
+
+| 情况 | 插件的反应 |
+| --- | --- |
+| 输入框为空且有焦点时按 `↑` | 填入这个会话里你上一次发的消息，不发送；Agent 回答中也能用 |
+| 输入框里有字时按 `↑` | 不拦截，光标照常上移 |
+| 会话还没发过消息 | 什么都不做 |
+
+只恢复文字，图片附件不恢复。不调用模型。
+
+### 这些情况不会抢你的按键
+
+带 `Shift` / `Ctrl` / `Alt` / `⌘` 的组合键、输入法正在组字、长按重复、输入框没有焦点、DSH 正在提交或处理斜杠命令（输入状态为 `submitting` / `adjudicating` / `claimed`）时，插件都不拦截按键。DSH 自己只在 `/`、`@` 菜单弹出时使用方向键，而那时输入框里必然有字，不会和插件冲突。
 
 ---
 
-## 验证方法
+## 配置
 
-### 自动化测试
+写在 [cordis.patch.yml](cordis.patch.yml) 里（profile 的补丁层同样可以覆盖）：
 
-```powershell
-cd E:\SynologyDrive\AIWorkplace\dsh-prompt-prefill
+| 键 | 默认值 | 说明 |
+| --- | --- | --- |
+| `enabled` | `true` | 总开关。关闭后 → 和 ↑ 都不生效。 |
+| `provider` / `model` | `''` | 生成提示词固定用的模型，**两项都填才生效**；留空则跟随当前会话。 |
+| `maxOutputTokens` | `512` | 单次生成的最大输出 token 数。 |
+| `timeoutMs` | `20000` | 单次生成的超时（毫秒）。 |
+| `maxRecentTurns` | `3` | 发给模型的最近消息条数（你和助手各算一条）。 |
+| `maxContextChars` | `4000` | 发给模型的对话文字总字数上限。 |
+| `maxCandidateChars` | `1200` | 单条提示词的字数上限，超出截断。 |
+| `useFallback` | `false` | 生成失败时是否改为显示兜底句。默认关闭：宁可不显示，也不给千篇一律的话。 |
+| `fallbackPrompts` | 三条中文 | `useFallback` 打开时轮换使用的兜底句。 |
+
+### 用哪个模型生成提示词
+
+默认依次尝试：
+
+1. 配置里填的 `provider` + `model`；
+2. 这个会话最近一次实际使用的模型；
+3. DSH 的默认模型。
+
+复用的是你在 DSH 里配置好的模型和密钥，插件自己不需要任何凭据，浏览器也接触不到密钥。
+
+调用时会请求「关闭思考」（`reasoningEffort: 'off'`），让提示词又快又便宜。模型不支持这个参数时（例如实测的 `workbuddy/glm-5.3-flash`），会自动去掉它重试一次。
+
+**建议固定一个模型的情况：**
+
+- 装了会自动切换主对话模型的插件（例如 [dsh-router-laya](https://github.com/HapyRain/dsh-router-laya)）：不固定的话，提示词会跟着上一轮被切换到的模型走，速度和成功率不稳定。
+- 当前聊天模型是关不掉思考的推理模型：思考过程可能用光 `maxOutputTokens`，正文为空。
+
+选一个响应快、不带思考的模型即可，例如：
+
+```yaml
+        provider: 'workbuddy'
+        model: 'glm-5.3-flash'
+```
+
+发给模型的内容只有最近几条对话的文字，发送前会把 `sk-…` 形式的密钥、`api_key` / `token` / `password` / `secret` 字段和 `Bearer …` 替换成「[已隐藏]」。这种按格式识别的脱敏不能保证认出所有敏感信息。
+
+---
+
+## 排查
+
+### 一点反应都没有（↑ 也不管用）
+
+1. 确认已经**完全退出并重开** DSH，且重开时代码已经同步完成。
+2. 按 `Ctrl+Shift+I` 打开开发者工具，切到 **Console**，搜索 `dsh-prompt-prefill`：
+   - 「RPC 路由不存在（404）」：插件的后台部分没加载，确认插件已启用（`dsh plugin --profile desktop list`）并重启；
+   - 什么都搜不到：插件的界面部分没加载，同样检查插件是否启用。
+
+### ↑ 能用，但回答完不出灰字
+
+查看[诊断记录](#诊断记录)，按 `result` 一列判断：
+
+| `result` | 含义 | 怎么办 |
+| --- | --- | --- |
+| `model` | 正常生成了 | 若仍看不到灰字，检查输入框是否有焦点、是否已有文字 |
+| `NO_CANDIDATE` · 生成失败 | 模型调用出错；`detail` 里有 DSH 给出的错误码与原因 | 按错误原因处理，常见是模型或网关配置问题；可在配置里固定一个模型 |
+| `NO_CANDIDATE` · 模型没有给出可用的提示词 | 模型回了 `NONE` 或空；`detail` 里有正文开头与结束原因 | 对话没有明显下一步时属正常；若 `detail` 显示「结束原因 max-tokens、正文 0 字」，是思考用光了额度，换不带思考的模型或调大 `maxOutputTokens` |
+| `NO_CANDIDATE` · 生成超时 | 超过 `timeoutMs` | 调大 `timeoutMs` 或换更快的模型 |
+| `NO_CANDIDATE` · 请求已取消 | 生成途中又开始了新回合或切换了会话 | 正常现象 |
+| `SKIPPED` | 上一轮没有正常结束；`detail` 写明 DSH 记录的结束原因 | `error` / `aborted` / `max-tokens` 属正常跳过 |
+| `NO_TURN` | 来要建议时，8 秒内没等到这一轮的回合结束事件 | 偶发可忽略；频繁出现请保存诊断结果反馈 |
+| 记录里没有这一次 | 界面部分没察觉到回答结束，没有发出请求 | 在 Console 里看有没有「回答结束，开始请求提示词」这一行 |
+
+### 诊断记录
+
+插件会记下最近 20 次生成的结果（只在内存里，重启清空），每次也写一行后台日志（前缀 `dsh-prompt-prefill: 生成`）。在 DSH 的开发者工具 Console 里运行：
+
+```js
+fetch('/dsh-prompt-prefill/rpc',{method:'POST',headers:{'content-type':'application/json'},body:'{"method":"diagnostics"}'}).then(r=>r.json()).then(d=>{console.log(d.version,d.trigger,'收到事件',d.eventsReceived);console.table(d.recent)})
+```
+
+也可以让本机的其他工具向 `/dsh-prompt-prefill/rpc` 发送 POST 请求 `{"method":"diagnostics"}`。返回内容：
+
+| 字段 | 含义 |
+| --- | --- |
+| `version` | 后台**实际运行**的版本（启动时读取）。和磁盘上的 package.json 不一致，说明需要重启 |
+| `trigger` | 「宿主监听回合结束」为正常；「浏览器半察觉回答结束」表示这个 DSH 不支持回合事件，已自动退回旧做法 |
+| `eventsReceived` | 后台收到的会话事件总数；为 0 说明事件没有送到插件 |
+| `trackedSessions` | 正在跟踪回合的会话数 |
+| `config` | 当前生效的关键配置 |
+| `recent` | 最近的生成记录：时间、会话、回合号、耗时、`result`、原因 `message` 与详情 `detail`（模型、正文字数、结束原因、错误、是否重试过、正文开头） |
+
+---
+
+## 工作原理
+
+插件分两半：**后台（宿主半，[lib/index.js](lib/index.js)）** 在 DSH 的 Node 进程里读会话、调模型；**界面（浏览器半，[lib/client.js](lib/client.js)）** 在输入框里画灰字、处理按键。两者通过本机接口 `/dsh-prompt-prefill/rpc` 通信。
+
+**→ / Tab 的流程**
+
+1. 后台订阅 DSH 的 `session/event`，为每个会话记下最近一次 `turn/end` 的回合号与结束原因（`completed` / `error` / `aborted` / `max-tokens` / …）；`turn/start` 时作废上一轮的建议。这里只更新内存，不写任何会话记录。
+2. 界面察觉回答结束（会话从「正在回答」变回空闲）时，带上「已经看过第几回合」来要建议（`method: 'suggestion'`）。后台若还没收到这一轮的 `turn/end`，最多等 8 秒。
+3. 后台以 `turn/end` 判断这一轮是否正常完成：是才生成，且**同一回合只生成一次**并缓存。生成是按需的——回合结束只记账，界面来要时才调模型，DSH 里看不见的会话（如后台子任务）不会白白花钱。
+4. 生成：用 `session.deriveMessages()` 取最近的对话，按上面的模型选择规则调用 `ctx.llm.stream()`，取第一行作为提示词。
+5. 界面拿到后在输入框上方画一层与输入框像素对齐的灰字；按 `Tab` / `→` 时调用 `inputActions.setDraft()` 写入草稿。
+
+退路：DSH 没有 `ctx.on`，或后台一次都没收到某个会话的事件时，改由界面决定时机，后台按最后几条消息推断上一轮是否正常结束。若将来 DSH 提供原生内联建议（`inputActions.offerSuggestion`），界面会自动改用原生显示。
+
+**↑ 的流程**：界面拦截空输入框上的 `↑`，向后台要这个会话最后一条真人消息（`method: 'lastSent'`），拿到后 `setDraft()`。等待期间你开始打字或切换会话，结果就丢弃。
+
+**接口的安全边界**：只接受 POST；TCP 对端和 `Host` 都必须是本机回环地址；带 `Origin` 时必须与连接精确同源；`Sec-Fetch-Site: cross-site` 一律拒绝。桌面端转发请求时会去掉 `Origin`，所以没有 `Origin` 时放行。插件没有做用户级鉴权。
+
+---
+
+## 维护者备忘：踩过的坑
+
+改代码前值得先看一遍，每一条都曾让插件「看起来能用、实际不工作」：
+
+1. **DSH 不会为模型调用失败抛错。** `LlmRuntime.stream()` 把任何失败（包括调用前就被拒绝的 `UNSUPPORTED_REASONING_EFFORT`）包装成 `{ type: 'finish', reason: { kind: 'error' | 'aborted', failure: { message, code } } }`。只靠 `try/catch` 会把失败当成「正文 0 字」的正常结束，重试也永远不会触发（0.4.2 修复）。
+2. **webServer 服务可能比插件晚就绪。** 必须用 `ctx.inject(['webServer'], …)` 等它就绪再注册路由；直接 `ctx.get('webServer')` 拿到 `undefined` 就会一个路由都没注册，界面请求全部 404（0.1.1 修复）。
+3. **`Session` 没有 `events` 属性。** 读历史用未废弃的 `deriveMessages()`；`snapshotEvents()` / `eventAt()` / `ownEvents()` 已标记 `@deprecated`，禁止新的生产调用。测试里的假会话必须复刻真实形状，否则测试全绿、线上全错。
+4. **输入框是 Lexical 的 `contenteditable`，不是 `<textarea>`。** `.value` 恒为 `undefined`，要读 `.textContent`；焦点常落在输入框的子节点上，要用 `input.contains(document.activeElement)`。
+5. **回答结束后 DSH 会以用户角色插入消息**（切换模型、压缩上下文、goal、schedule、子任务完成等 `MessageSourceMap` 中的来源）。按「最后一条是不是用户消息」判断上一轮是否完成会误判；现在以 `turn/end` 为准，退路里也只把真人输入、工具结果、对提问的回答、对工具调用的批准当作「没收尾」（0.3.1 / 0.4.0）。
+6. **`session/event` 按范围过滤派发。** 事件不一定送得到插件，所以收不到时必须有退路，不能干等（0.4.1）。
+7. **槽位 `conversation.input.overlay` 的标准 props** 是 `useInput` / `inputActions` / `useSession` / `sessionId`；`SessionSnapshot` 没有 `turnEnds`。
+8. **灰字与 DSH 自带的输入提示重叠。** 显示灰字时给输入框加 `data-dsh-prompt-prefill="on"`，用样式隐藏 `[data-composer-placeholder]` 和 `p:last-child:after`，收起时摘掉。
+9. **发给模型的消息用 `RequestUserInput` 形状**（`{ role: 'user', content: [...] }`，不带 `id` 和 `source`）；`MessageSourceMap` 里没有 `plugin` 这个来源。
+
+---
+
+## 文件结构与测试
+
+```
+dsh-prompt-prefill/
+├── package.json        插件清单：入口、exports、dsh 字段（bundle 补丁与浏览器半）
+├── cordis.patch.yml    profile 补丁：插件行与全部配置项（含中文注释）
+├── lib/
+│   ├── core.js         纯逻辑：配置归一化、脱敏、取最近对话、判断上一轮是否完成、清洗模型输出
+│   ├── index.js        后台：回合跟踪、RPC（suggestion / lastSent / diagnostics）、调用模型、诊断记录
+│   └── client.js       界面：灰字浮层、Tab / → / ↑ / Escape、会话状态、样式注入
+└── test/
+    ├── core.test.mjs   纯逻辑
+    ├── host.test.mjs   后台：路由与安全校验、回合事件、模型失败与重试、诊断
+    └── client.test.mjs 界面：自带微型 React 与 DOM，覆盖按键、时机、会话切换与生命周期
+```
+
+运行测试（需要 Node.js 20 或更高版本）：
+
+```bash
 npm test
 ```
 
-三个套件的断言覆盖正常功能及回归边界，其中包括：
+界面测试用的是模拟的 React 和 DOM，不能代替在真实 DSH 里验证。改动后建议按下面的清单手动过一遍：
 
-- `→` 触发 `inputActions.setDraft`，且写入内容正是候选提示词（`client.test.mjs`「按 → 采纳（核心验收项）」）；
-- 在**真实的 contentEditable 输入框形态**下 `→` 同样生效，且焦点落在输入框子节点时也能识别（`client.test.mjs`「contentEditable 输入框（真实 DSH 形态）」）；
-- 通过**槽位真实标准 prop（`useInput`/`useSession`）**的路径同样生效（`client.test.mjs`「槽位标准 props（useInput / useSession，生产路径）」）；
-- 输入框有文字 / 未聚焦 / 带修饰键 / 输入法组合中，**均不拦截** `→`；
-- 草稿非空或会话运行中**不发请求**；
-- **通过 `deriveMessages()` 拿到历史并真正调用模型**，而不是静默降级成兜底
-  （`host.test.mjs`「通过 deriveMessages() 能拿到历史并真正调用模型」）；
-- 只在**回答结束时**生成：只打开会话不请求、同一轮失败不重试（`client.test.mjs`「只在回答结束时生成」）；
-- `Tab` 与 `→` 都能采纳，`Shift+Tab` 和未聚焦时的 `Tab` 不拦截（`client.test.mjs`「按 Tab 采纳」）；
-- `↑` 回填上一次发送的内容：有文字、带修饰键、输入法组合、未聚焦、输入锁定时不拦截；等待期间开始输入或切换会话不覆盖（`client.test.mjs`「按 ↑ 回填上一次发送的内容」，`host.test.mjs`「↑ 回填：lastSent」）；
-- 上一轮出错时跳过且不调用模型（`host.test.mjs`「上一轮没有正常结束时跳过」）；
-- 默认不用兜底句；打开 `useFallback` 时，模型抛错、输出 `NONE`、无模型路由、无历史**全部降级为兜底**。
-- JSON 凭据脱敏、长的新消息保留、取消后迟到响应不回写、锁定时不采纳；
-- effect 重放、同会话多个实例共享更新、ref 摘除后的 placeholder 清理；
-- 适配器不响应取消时 RPC 仍能超时返回、取消后不采纳半截文本、远端不能伪造回环 Host。
-
-浏览器套件模拟 hooks 和 DOM，不代替真实 React/Harness 集成测试。
-
-### 手工验证清单
-
-1. 打开一个已有对话的会话：**不应**出现提示词（只打开不生成）。
-2. 发一条消息，等 Agent 回答完：输入框内出现**浅灰色**提示词，且发送按钮**仍不可用**。
-3. 按 `Tab` 或 `→`：文字变为正常颜色并成为草稿，发送按钮可用；**不应自动发送**。
-4. 再清空草稿：提示词应重新出现（无需重新请求模型）。
-5. 输入任意字符：提示词立即消失；此时按 `→` 光标正常右移。
-6. 按 `Escape`：提示词消失。
-7. 切换会话：不应看到上一个会话的提示词残留；切回原会话，之前的提示词应该还在。
-8. 在 Agent 回答过程中：不应出现提示词。
-9. 让一轮回答出错或中途停止：不应出现提示词。
-10. 输入框为空时按 `↑`：填入这个会话里你上一次发送的内容，不自动发送；输入框有字时按 `↑`，光标正常上移。
+1. 打开一个已有对话的会话：**不应**出现灰字。
+2. 发一条消息、等回答完：出现灰字，发送按钮仍不可用。
+3. 按 `Tab` 或 `→`：灰字变成草稿，不自动发送。
+4. 清空草稿：灰字重新出现，不重新请求模型。
+5. 输入任意字符：灰字消失，`→` 正常移动光标。
+6. 按 `Escape`：灰字消失。
+7. 切到别的会话再切回：之前的灰字还在。
+8. 回答进行中：不出现灰字。
+9. 回答出错或中途停止：不出现灰字。
+10. 输入框为空时按 `↑`：填入上一次发送的内容；有字时按 `↑`，光标正常上移。
 
 ---
 
 ## 已知限制
 
-- **浮层定位是像素级对齐，不是真正的内联文本**。若未来 Harness 提供内联建议 API，建议改为调用它（参考项目已在新版客户端这么做）。
-- 输入框**内部**滚动时浮层跟随依赖 `scroll`（捕获）事件重对齐；候选通常不超过一行，且 `maxCandidateChars` 会截断过长内容，因此实际影响可忽略。
-- 只在本插件看到回答结束（running: true → false）时生成。回答进行中切走、结束后再切回来，会在切回时补生成；但如果切走**之前**回答还没开始（例如在另一个窗口发起），切回时看不到这一轮的变化，显示的仍是之前的提示词。
-- 生成发生在宿主半，需要当前会话存在可用对话文本。
-- 浮层按空输入框高度裁剪长候选，按 `→` 会写入完整候选；真机上需检查预览可读性，并按需调小 `maxCandidateChars`。
-- 幽灵文本使用 `aria-hidden`，目前没有单独的读屏提示。
-- 未提供设置界面（GUI 开关）。全部配置经 `cordis.patch.yml` 完成；如果你希望增加「设置 → 插件」里的开关与提示词编辑卡片，可以在此基础上按 `settings.plugin.item` 槽位扩展。
+- **灰字是一层对齐的浮层，不是真正写进输入框的文字。** DSH 0.2.0-rc.2 的 `InputActions` 没有内联建议接口；输入框内部滚动时靠监听滚动重新对齐，候选很长时浮层会按输入框高度截断（按 `Tab` / `→` 仍写入完整内容）。
+- **是否去要建议，取决于界面察觉到回答结束。** 回答进行中切走、结束后切回会补要一次；但如果切走**之前**回答还没开始（例如在另一个窗口发起），切回时显示的仍是之前的灰字。
+- **对话没有明显下一步时**（打招呼、一问一答已经结束），模型常回 `NONE`，不出灰字。
+- **↑ 只能填入上一条**，不能连续往前翻；只恢复文字，不恢复图片附件。
+- **没有设置界面**，配置只能改 `cordis.patch.yml`。
+- 灰字带 `aria-hidden`，没有单独的读屏提示。
+- 不要和其他同样拦截 `Tab` / `→` / `↑` 的插件同时安装（见下方同类插件）。
 
 ---
 
-## 与参考项目的关系
+## 版本历史
 
-[ChuanTianML/prompt-for-me](https://github.com/ChuanTianML/prompt-for-me)（`dsh-prompt-for-me`，Prompt for Me / Prompt 嘴替）本身就是一个 DSH 插件，它会在 Agent 回答结束后用模型准备「下一句」，并支持 Tab / `→` 采纳。
+| 版本 | 主要变化 |
+| --- | --- |
+| 0.4.2 | 正确处理 DSH 以 `finish` 片段返回的模型失败：不支持关闭思考时去掉该参数重试，其他错误写进诊断。修复部分模型永远不出灰字 |
+| 0.4.1 | 后台收不到某个会话的事件时，立刻退回旧做法，不再干等 |
+| 0.4.0 | 改由后台监听 `turn/end` 判断是否生成；同一回合只生成一次并缓存 |
+| 0.3.1 | 修复回答后插入的系统类消息导致误判「上一轮没收尾」；新增诊断记录 |
+| 0.3.0 | 新增 ↑ 填入上一次发送的内容；斜杠命令处理中（`claimed`）也视为锁定 |
+| 0.2.1 | 切换会话后保留已生成的灰字；修复会话数超过上限时界面反复刷新 |
+| 0.2.0 | 只在回答结束时生成；默认不显示兜底句；支持 Tab 采纳；上一轮出错时跳过 |
+| 0.1.1 | 修复后台路由在 webServer 就绪前注册失败、导致完全没有灰字；首次上传到 GitHub |
 
-本插件借鉴了它的这些做法：
+---
 
-- 客户端 `window.__ModuleLoader__.load({id, factory})` 的包装形态；
-- 宿主半用 `ctx.get('webServer').register(...)` 注册同源 POST 的 RPC 路由；
-- 用 `ctx.get('sessions').get(id)` 读会话、`ctx.get('llm').stream(...)` 调模型、`ctx.get('agentDefaultModel')` 兜底路由；
-- 「草稿之外的建议不算草稿」「`→` 采纳、`Enter` 绝不采纳」的交互语义；
-- 失败一律降级、绝不破坏输入区的防御式写法。
+## 同类插件与参考
 
-差异：它按**轮次完成事件**驱动并支持跨会话偏好记忆与手动快捷键；本插件按**输入框为空**驱动，只做「一条来自当前会话场景的预填充」，实现面更窄、更易审计。
+本插件最初参考了 [ChuanTianML/prompt-for-me](https://github.com/ChuanTianML/prompt-for-me)（`dsh-prompt-for-me`）：浏览器半的模块包装方式、RPC 路由注册、读会话与调模型的服务用法，以及「建议不算草稿、Enter 绝不采纳」的交互约定都来自它。
+
+功能相近的插件（2026-10 调研）：
+
+| 插件 | 做法 |
+| --- | --- |
+| [ChuanTianML/prompt-for-me](https://github.com/ChuanTianML/prompt-for-me) | 下一句建议，可手动换一条，会记住偏好 |
+| [studyzy/dsh-suggest-prompt](https://github.com/studyzy/dsh-suggest-prompt) | 后台在 `turn/end` 时生成，建议写入会话记录，过滤套话，带设置页 |
+| [nzl153/dsh-prompt-suggestions](https://github.com/nzl153/dsh-prompt-suggestions) | 与本插件的 → 功能思路几乎相同，默认用 flash 模型、关闭思考 |
+| [converk/dsh-tweaks · prompt-history](https://github.com/converk/dsh-tweaks/tree/main/plugins/prompt-history) | 空输入框 ↑ / ↓ 连续翻历史，显示位置角标 |
+| [PerryLink/dsh-composer-history](https://github.com/PerryLink/dsh-composer-history) | 终端风格的输入历史，支持 Ctrl+R 搜索 |
+
+它们同样会拦截 `Tab` / `→` / `↑`，**不要与本插件同时安装**。本插件的特点是把「下一句建议」和「上一条回填」放在一个小插件里，并带诊断记录，方便排查。
 
 ---
 
