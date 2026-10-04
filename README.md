@@ -1,5 +1,6 @@
 # dsh-prompt-prefill
 
+[![npm](https://img.shields.io/npm/v/dsh-prompt-prefill)](https://www.npmjs.com/package/dsh-prompt-prefill)
 [![test](https://github.com/Tleon-H/dsh-prompt-prefill/actions/workflows/test.yml/badge.svg)](https://github.com/Tleon-H/dsh-prompt-prefill/actions/workflows/test.yml)
 
 DeepSeek Harness（DSH）桌面端插件，给输入框加两个小功能：
@@ -29,18 +30,26 @@ DeepSeek Harness（DSH）桌面端插件，给输入框加两个小功能：
 
 ### 安装
 
-**方式一：本地目录安装**（想自己改代码时推荐）。DSH 会链接到这个目录、直接运行这里的代码，改完不用重新安装：
+**方式一：从 npm 安装**（推荐，最快）：
+
+```powershell
+dsh plugin --profile desktop add dsh-prompt-prefill
+```
+
+**方式二：从 GitHub 安装**（获取仓库里最新的代码）：
+
+```powershell
+dsh plugin --profile desktop add github:Tleon-H/dsh-prompt-prefill
+```
+
+**方式三：本地目录安装**（想自己改代码时用）。DSH 会链接到这个目录、直接运行这里的代码，改完不用重新安装：
 
 ```powershell
 git clone https://github.com/Tleon-H/dsh-prompt-prefill.git
 dsh plugin --profile desktop add "<你的目录>\dsh-prompt-prefill"
 ```
 
-**方式二：直接从 GitHub 安装**：
-
-```powershell
-dsh plugin --profile desktop add github:Tleon-H/dsh-prompt-prefill
-```
+以上命令以桌面端的 `desktop` profile 为例；用网页版 DSH 的，把 `--profile desktop` 换成你自己的 profile（通常是 `--profile web`）。
 
 装完后**完全退出 DSH（包括托盘图标）再重新打开**。
 
@@ -49,7 +58,7 @@ dsh plugin --profile desktop add github:Tleon-H/dsh-prompt-prefill
 ### 更新
 
 - **本地目录安装**：`git pull` 或改完代码后，**完全退出并重开 DSH**。如果目录通过网盘（如 Synology Drive、OneDrive）在多台电脑间同步，要**等同步完成再重启**——先重启、后同步，DSH 跑的仍是旧代码。可以用[诊断](#诊断记录)结果里的 `version` 确认新代码是否生效。
-- **GitHub 安装**：先 `dsh plugin --profile desktop remove dsh-prompt-prefill`，再重新 `add`。
+- **npm 或 GitHub 安装**：先 `dsh plugin --profile desktop remove dsh-prompt-prefill`，再用原来的命令重新 `add`，然后重启 DSH。
 
 ### 卸载
 
