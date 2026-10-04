@@ -1,6 +1,6 @@
 # dsh-prompt-prefill
 
-DeepSeek Harness 桌面端插件：**Agent 回答结束后，在输入框里以灰色文字预填充一条提示词，按 `Tab` 或 `→` 即可把它写进草稿。**
+DeepSeek Harness 桌面端插件：**Agent 回答结束后，在输入框里以灰色文字预填充一条提示词，按 `Tab` 或 `→` 即可把它写进草稿；输入框为空时按 `↑`，填入这个会话里上一次发送的内容。**
 
 提示词不是写死的模板，而是根据**当前会话的最近对话**动态生成的一条「你接下来最可能想发」的消息。
 
@@ -28,10 +28,14 @@ DeepSeek Harness 桌面端插件：**Agent 回答结束后，在输入框里以�
 | 草稿为空且输入框聚焦时按 `Tab` 或 `→` | 提示词经宿主 `setDraft` 写入草稿，**不发送**；撤销行为取决于编辑器实现 |
 | 输入框里已有任何文字 | 灰色提示词立即隐藏，`Tab` / `→` 交还给原生行为 |
 | 按 `Escape` | 关闭灰色提示词 |
+| 草稿为空且输入框聚焦时按 `↑` | 填入**这个会话里上一次发送的内容**，**不发送**；不需要先有灰色提示词，Agent 回答中也可用 |
+| 输入框里有文字时按 `↑` | 不拦截，交给原生光标移动（DSH 的 `/`、`@` 菜单也只在有文字时使用 `↑`，互不冲突） |
+| 带 `Shift/⌘/Ctrl/Alt` 的 `↑`、输入法组合中、长按重复 | 不拦截 |
+| `↑` 回填的内容 | 只恢复文字，图片附件不恢复；会话还没发过消息时什么都不做 |
 | 带 `Shift/⌘/Ctrl/Alt` 的 `→` / `Tab` | 不拦截，保留选区操作与 `Shift+Tab` 反向切换焦点 |
 | 输入法组合输入中（`isComposing`） | 不拦截 |
 | Agent 正在回答 | 不请求、不显示 |
-| 输入处于 `submitting` / `adjudicating` | 不生成、不显示、不采纳已有候选 |
+| 输入处于 `submitting` / `adjudicating` / `claimed` | 不生成、不显示、不采纳已有候选，`↑` 也不回填 |
 | 上一轮出错或被中断 | 不请求模型、不显示 |
 | 模型不可用 / 超时 / 新会话无历史 | 默认不显示；打开 `useFallback` 才显示兜底提示词 |
 | 同一轮生成失败 | 不重试，等下一轮回答结束 |
@@ -64,7 +68,7 @@ dsh-prompt-prefill/
 | 文件 | 用途 |
 | --- | --- |
 | `lib/core.js` | 与 Harness 无关的纯函数。独立出来是为了让最易出错的边界（脱敏、截断、`NONE` 处理、兜底轮换）能被直接测到。 |
-| `lib/index.js` | 宿主半。暴露 `name` / `apply`，经 `ctx.get('webServer')` 注册 `/dsh-prompt-prefill/rpc`；首选会话的 `deriveMessages()` 取最近对话，兼容 `snapshotEvents()`；用 `ctx.get('llm').stream(...)` 生成候选。 |
+| `lib/index.js` | 宿主半。RPC 同时提供 `method: 'lastSent'`：只读会话历史，返回最后一条真人消息原文，供 `↑` 回填，不调用模型。暴露 `name` / `apply`，经 `ctx.get('webServer')` 注册 `/dsh-prompt-prefill/rpc`；首选会话的 `deriveMessages()` 取最近对话，兼容 `snapshotEvents()`；用 `ctx.get('llm').stream(...)` 生成候选。 |
 | `lib/client.js` | 浏览器半。经 `window.__ModuleLoader__.load` 注册，用 `ctx.slots.inject('conversation.input.overlay', ...)` 把浮层挂进 composer 卡片内部。 |
 | `test/client.test.mjs` | 自带微型 React（真的执行 hooks）与微型 DOM，因此能断言「按 → 确实调用了 `inputActions.setDraft`」。 |
 
@@ -282,6 +286,28 @@ dsh plugin --profile desktop add github:<你的账号>/dsh-prompt-prefill
 > 同时：若 Harness 提供原生内联建议（`inputActions.offerSuggestion`），优先交给原生显示与采纳（Tab / →），
 > 不再自绘浮层；没有时才退回自绘浮层。
 
+### 排查：回答完有时不出灰字
+
+插件会为最近 20 次生成留下记录（只在内存里，重启清空），每次也写一行宿主日志（前缀 `dsh-prompt-prefill: 生成`）。
+在 DSH 里按 `Ctrl+Shift+I` → **Console**，粘贴下面这行回车即可查看：
+
+```js
+fetch('/dsh-prompt-prefill/rpc',{method:'POST',headers:{'content-type':'application/json'},body:'{"method":"diagnostics"}'}).then(r=>r.json()).then(d=>console.table(d.recent))
+```
+
+| `result` | 含义 | 处理方向 |
+| --- | --- | --- |
+| `model` | 正常生成 | — |
+| `SKIPPED` | 判定上一轮没有正常结束；`detail` 写明依据的是哪条消息 | 若回答其实正常结束，把 `detail` 发给维护者调整判断规则 |
+| `NO_CANDIDATE` + 「模型没有给出可用的提示词」 | 模型回了 `NONE` 或空；`detail` 里有正文开头与片段统计 | 只有 `reasoning-*` 片段、正文 0 字时，多半是推理模型把 `maxOutputTokens` 用光了，可调大或在配置里固定一个非推理模型 |
+| `NO_CANDIDATE` + 「生成超时」 | 超过 `timeoutMs` | 调大 `timeoutMs` 或换更快的模型 |
+| `NO_CANDIDATE` + 「请求已取消」 | 生成途中 Agent 又开始回答或切换了会话 | 正常现象 |
+| 记录里**没有**这一次 | 浏览器半没有发出请求：Console 里也看不到「回答结束，开始请求提示词」 | 说明没检测到回答结束，需要进一步排查 |
+
+> 0.3.1：DSH 会在回答结束后以用户角色插入切换模型、压缩上下文、goal、schedule、子任务完成等消息。
+> 旧规则把「最后一条是用户角色」一律当成上一轮没收尾，导致正常结束的回答也被跳过。现在只有真人输入、
+> 工具结果、对提问的回答、对工具调用的批准排在最后时才跳过。
+
 ### 卸载
 
 ```powershell
@@ -328,6 +354,7 @@ npm test
   （`host.test.mjs`「通过 deriveMessages() 能拿到历史并真正调用模型」）；
 - 只在**回答结束时**生成：只打开会话不请求、同一轮失败不重试（`client.test.mjs`「只在回答结束时生成」）；
 - `Tab` 与 `→` 都能采纳，`Shift+Tab` 和未聚焦时的 `Tab` 不拦截（`client.test.mjs`「按 Tab 采纳」）；
+- `↑` 回填上一次发送的内容：有文字、带修饰键、输入法组合、未聚焦、输入锁定时不拦截；等待期间开始输入或切换会话不覆盖（`client.test.mjs`「按 ↑ 回填上一次发送的内容」，`host.test.mjs`「↑ 回填：lastSent」）；
 - 上一轮出错时跳过且不调用模型（`host.test.mjs`「上一轮没有正常结束时跳过」）；
 - 默认不用兜底句；打开 `useFallback` 时，模型抛错、输出 `NONE`、无模型路由、无历史**全部降级为兜底**。
 - JSON 凭据脱敏、长的新消息保留、取消后迟到响应不回写、锁定时不采纳；
@@ -347,6 +374,7 @@ npm test
 7. 切换会话：不应看到上一个会话的提示词残留；切回原会话，之前的提示词应该还在。
 8. 在 Agent 回答过程中：不应出现提示词。
 9. 让一轮回答出错或中途停止：不应出现提示词。
+10. 输入框为空时按 `↑`：填入这个会话里你上一次发送的内容，不自动发送；输入框有字时按 `↑`，光标正常上移。
 
 ---
 

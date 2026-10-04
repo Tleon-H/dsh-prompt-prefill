@@ -328,6 +328,78 @@ console.log('\n兜底路径')
   check('没有模型路由时走兜底', noRouteReply.ok === true && noRouteReply.source === 'fallback', JSON.stringify(noRouteReply))
 }
 
+console.log('\n↑ 回填：lastSent')
+{
+  let calls = 0
+  const llm = fakeLlm([{ type: 'text-delta', text: '请继续\n' }], () => { calls += 1 })
+  const harness = makeHarness({ services: { sessions: fakeSessions(turns('第一句', '回复一', '帮我改成表格', '好的')), llm } })
+  const reply = await (await invoke(harness, { method: 'lastSent', sessionId: 's1' })).reply()
+  check('返回最后一条用户消息', reply.ok === true && reply.text === '帮我改成表格', JSON.stringify(reply))
+  check('回填不调用模型', calls === 0, String(calls))
+
+  // 正在回答时（最后一条就是用户消息）也能取到。
+  const running = makeHarness({ services: { sessions: fakeSessions(turns('你好', '你好呀', '刚发的')) } })
+  const runningReply = await (await invoke(running, { method: 'lastSent', sessionId: 's1' })).reply()
+  check('上一轮未结束时也能取', runningReply.text === '刚发的', JSON.stringify(runningReply))
+
+  const empty = makeHarness({ services: { sessions: fakeSessions([]) } })
+  const emptyReply = await (await invoke(empty, { method: 'lastSent', sessionId: 's1' })).reply()
+  check('没有历史时返回 NO_HISTORY', emptyReply.ok === false && emptyReply.code === 'NO_HISTORY', JSON.stringify(emptyReply))
+  check('没有历史时不给兜底句', emptyReply.text === undefined && emptyReply.candidate === undefined)
+
+  const legacy = makeHarness({ services: { sessions: fakeLegacySessions(turns('旧式', '回复')) } })
+  const legacyReply = await (await invoke(legacy, { method: 'lastSent', sessionId: 's1' })).reply()
+  check('旧式事件历史也能取', legacyReply.text === '旧式', JSON.stringify(legacyReply))
+
+  const off = makeHarness({ config: { enabled: false }, services: { sessions: fakeSessions(turns('你好')) } })
+  const offReply = await (await invoke(off, { method: 'lastSent', sessionId: 's1' })).reply()
+  check('插件关闭时不回填', offReply.code === 'DISABLED', JSON.stringify(offReply))
+}
+
+console.log('\n诊断记录')
+{
+  const header = { requestHeader: () => ({ config: { provider: 'p', model: 'm' } }) }
+  const goalTail = [...turns('你好', '你好呀'), { type: 'user/message', data: { source: { kind: 'goal' }, content: [{ type: 'text', text: '目标检查' }] } }]
+  const harness = makeHarness({
+    config: { useFallback: false },
+    services: {
+      sessions: fakeSessions(goalTail, header),
+      llm: fakeLlm([{ type: 'reasoning-delta', text: '想一想' }, { type: 'text-delta', text: '请把它改成表格\n' }]),
+    },
+  })
+  const generated = await (await invoke(harness, { sessionId: 's1' })).reply()
+  check('回答后插入 goal 消息仍会生成', generated.ok === true && generated.source === 'model', JSON.stringify(generated))
+
+  const none = makeHarness({
+    config: { useFallback: false },
+    services: { sessions: fakeSessions(turns('你好', '你好呀'), header), llm: fakeLlm([{ type: 'text-delta', text: 'NONE' }]) },
+  })
+  await invoke(none, { sessionId: 's1' })
+  const unfinished = makeHarness({ config: { useFallback: false }, services: { sessions: fakeSessions(turns('你好', '你好呀', '再来'), header) } })
+  await invoke(unfinished, { sessionId: 's1' })
+
+  const read = async (h) => (await (await invoke(h, { method: 'diagnostics' })).reply())
+  const ok = await read(harness)
+  check('诊断返回版本号', typeof ok.version === 'string' && ok.version !== 'unknown', JSON.stringify(ok.version))
+  check('诊断返回关键配置', ok.config?.useFallback === false && ok.config?.timeoutMs > 0, JSON.stringify(ok.config))
+  const entry = ok.recent?.[0]
+  check('成功生成被记录', ok.recent?.length === 1 && entry.result === 'model', JSON.stringify(ok.recent))
+  check('记录包含模型与片段统计', /p\/m/.test(entry?.detail ?? '') && /reasoning-delta/.test(entry?.detail ?? ''), entry?.detail)
+  check('记录包含耗时与会话', typeof entry?.ms === 'number' && entry?.sessionId === 's1')
+
+  const noneEntry = (await read(none)).recent?.[0]
+  check('模型回 NONE 被记录且可见开头', noneEntry?.result === 'NO_CANDIDATE' && /NONE/.test(noneEntry?.detail ?? ''), JSON.stringify(noneEntry))
+
+  const skippedEntry = (await read(unfinished)).recent?.[0]
+  check('跳过被记录并说明依据', skippedEntry?.result === 'SKIPPED' && /user:user/.test(skippedEntry?.detail ?? ''), JSON.stringify(skippedEntry))
+
+  check('每次生成写一行宿主日志', harness.infos.some((line) => line.includes('生成 model')), JSON.stringify(harness.infos))
+  check('诊断不需要 sessionId', ok.ok === true)
+
+  for (let index = 0; index < 25; index += 1) await invoke(none, { sessionId: 's1' })
+  check('诊断最多保留 20 条', (await read(none)).recent.length === 20)
+}
+
 console.log('\n默认不用兜底句（与 Claude Code 一致）')
 {
   const quiet = makeHarness({ config: { useFallback: false }, services: { sessions: fakeSessions([]) } })

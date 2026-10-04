@@ -609,7 +609,11 @@ console.log('\nHarness 原生内联建议（offerSuggestion）')
   let tree = env.ghost.flush()
   check('候选交给原生 offerSuggestion', offered.length === 1 && offered[0].text === '请继续，并说明判断依据', JSON.stringify(offered))
   check('原生模式不画自绘浮层', env.findGhostNode(tree) === null)
-  check('原生模式不拦截按键', env.keydownCount() === 0, String(env.keydownCount()))
+  env.documentStub.activeElement = env.input
+  const nativeRight = env.dispatchKey('ArrowRight')
+  const nativeTab = env.dispatchKey('Tab')
+  check('原生模式不拦截 → 与 Tab（交给 Harness）',
+    drafted.length === 0 && !nativeRight.defaultPrevented && !nativeTab.defaultPrevented, JSON.stringify(drafted))
   check('原生模式不抑制原生 placeholder', env.input.getAttribute('data-dsh-prompt-prefill') === null)
 
   const id = offered[0]?.id
@@ -742,6 +746,145 @@ console.log('\n按 Tab 采纳')
   blurred.documentStub.activeElement = blurred.card
   const away = blurred.dispatchKey('Tab')
   check('未聚焦时 Tab 不拦截', blurredDrafts.length === 0 && away.defaultPrevented === false)
+}
+
+console.log('\n按 ↑ 回填上一次发送的内容')
+{
+  /** 按请求类型分别应答：lastSent 返回上一次发送的内容，其余返回候选。 */
+  const routed = (text = '上次发的那句') => async (url, init) => {
+    const body = JSON.parse(init.body)
+    return body.method === 'lastSent'
+      ? { json: async () => (text === null ? { ok: false, code: 'NO_HISTORY', message: '没有历史' } : { ok: true, text }) }
+      : { json: async () => ({ ok: true, candidate: '请继续，并说明判断依据' }) }
+  }
+  const lastSentCalls = (env) => env.fetchCalls.filter((call) => JSON.parse(call.init.body).method === 'lastSent')
+  const make = (overrides = {}) => {
+    const drafted = []
+    const env = setup({ primeTurn: false, fetchPlan: overrides.fetchPlan ?? routed() })
+    const props = {
+      sessionId: 'up',
+      input: { draft: '', phase: 'idle', ...overrides.input },
+      inputActions: { setDraft: (text) => drafted.push(text) },
+      session: { sessionId: 'up', running: false, ...overrides.session },
+    }
+    env.ghost.render(props)
+    env.documentStub.activeElement = env.input
+    return { env, props, drafted }
+  }
+
+  const { env, drafted } = make()
+  const up = env.dispatchKey('ArrowUp')
+  check('空输入框按 ↑ 被拦截', up.defaultPrevented === true)
+  await settle()
+  check('↑ 发出 lastSent 请求', lastSentCalls(env).length === 1, JSON.stringify(env.fetchCalls.map((c) => c.init.body)))
+  check('请求带上会话 id', JSON.parse(lastSentCalls(env)[0]?.init.body ?? '{}').sessionId === 'up')
+  check('↑ 写入上一次发送的内容', drafted.length === 1 && drafted[0] === '上次发的那句', JSON.stringify(drafted))
+
+  // 不需要先有幽灵文本：只打开会话（没有回答结束）也能用。
+  check('没有幽灵文本时也能用', env.findGhostNode(env.ghost.flush()) === null)
+
+  // Agent 正在回答时也能用（Harness 支持排队发送）。
+  const busy = make({ session: { running: true } })
+  busy.env.dispatchKey('ArrowUp')
+  await settle()
+  check('回答中也能回填', busy.drafted[0] === '上次发的那句', JSON.stringify(busy.drafted))
+
+  // 不拦截的情况。
+  const typed = make({ input: { draft: '已有文字' } })
+  typed.env.input.value = '已有文字'
+  const typedUp = typed.env.dispatchKey('ArrowUp')
+  await settle()
+  check('有文字时 ↑ 交给光标移动', !typedUp.defaultPrevented && lastSentCalls(typed.env).length === 0)
+
+  for (const [label, extra] of [['Shift+↑', { shiftKey: true }], ['Alt+↑', { altKey: true }], ['输入法组合中', { isComposing: true }], ['长按重复', { repeat: true }]]) {
+    const m = make()
+    const event = m.env.dispatchKey('ArrowUp', extra)
+    await settle()
+    check(`${label} 不拦截`, !event.defaultPrevented && lastSentCalls(m.env).length === 0)
+  }
+
+  const blurred = make()
+  blurred.env.documentStub.activeElement = blurred.env.card
+  const blurredUp = blurred.env.dispatchKey('ArrowUp')
+  check('输入框没聚焦时不拦截', !blurredUp.defaultPrevented)
+
+  for (const phase of ['adjudicating', 'claimed', 'submitting']) {
+    const m = make({ input: { phase } })
+    const event = m.env.dispatchKey('ArrowUp')
+    check(`${phase} 时不拦截`, !event.defaultPrevented)
+  }
+
+  const removed = make({ session: { removed: true } })
+  check('会话已移除时不拦截', !removed.env.dispatchKey('ArrowUp').defaultPrevented)
+
+  // 没有历史：不写入、不报错。
+  const none = make({ fetchPlan: routed(null) })
+  none.env.dispatchKey('ArrowUp')
+  await settle()
+  check('没有历史时不写入', none.drafted.length === 0)
+
+  // 等待期间用户已经开始输入：不覆盖。
+  let release
+  const slow = make({ fetchPlan: () => new Promise((resolve) => { release = resolve }) })
+  slow.env.dispatchKey('ArrowUp')
+  slow.env.ghost.render({ ...slow.props, input: { draft: '我自己打的', phase: 'idle' } })
+  await settle()
+  release?.({ json: async () => ({ ok: true, text: '上次发的那句' }) })
+  await settle()
+  check('等待期间开始输入则不覆盖', slow.drafted.length === 0, JSON.stringify(slow.drafted))
+
+  // 等待期间切换了会话：不写到别的会话。
+  let releaseSwitch
+  const switching = make({ fetchPlan: () => new Promise((resolve) => { releaseSwitch = resolve }) })
+  switching.env.dispatchKey('ArrowUp')
+  switching.env.ghost.render({ ...switching.props, sessionId: 'other', session: { sessionId: 'other', running: false } })
+  await settle()
+  releaseSwitch?.({ json: async () => ({ ok: true, text: '上次发的那句' }) })
+  await settle()
+  check('等待期间切换会话则不写入', switching.drafted.length === 0, JSON.stringify(switching.drafted))
+
+  // 同一会话有两个实例，其中处理按键的那个切到别的会话：
+  // 会话状态仍被另一个实例占用，必须靠会话 id 判断，不能写进新会话。
+  let releaseShared
+  const sharedUp = setup({ primeTurn: false, fetchPlan: () => new Promise((resolve) => { releaseShared = resolve }) })
+  const upDrafts = []
+  const otherDrafts = []
+  const upProps = { sessionId: 'up', input: { draft: '', phase: 'idle' }, inputActions: { setDraft: (t) => upDrafts.push(t) }, session: { sessionId: 'up', running: false } }
+  const secondUp = sharedUp.makeGhost({ primeTurn: false })
+  sharedUp.ghost.render(upProps)
+  secondUp.render(upProps)
+  sharedUp.documentStub.activeElement = sharedUp.input
+  sharedUp.dispatchKey('ArrowUp')
+  sharedUp.ghost.render({ ...upProps, sessionId: 'other', session: { sessionId: 'other', running: false }, inputActions: { setDraft: (t) => otherDrafts.push(t) } })
+  await settle()
+  releaseShared?.({ json: async () => ({ ok: true, text: '上次发的那句' }) })
+  await settle()
+  check('切到别的会话后不写进新会话', otherDrafts.length === 0, JSON.stringify(otherDrafts))
+
+  // 连按只发一次请求。
+  let releaseDouble
+  const double = make({ fetchPlan: () => new Promise((resolve) => { releaseDouble = resolve }) })
+  double.env.dispatchKey('ArrowUp')
+  double.env.dispatchKey('ArrowUp')
+  await settle()
+  check('连按只请求一次', double.env.fetchCalls.length === 1, String(double.env.fetchCalls.length))
+  releaseDouble?.({ json: async () => ({ ok: true, text: '上次发的那句' }) })
+  await settle()
+  check('连按只写入一次', double.drafted.length === 1, JSON.stringify(double.drafted))
+
+  // 宿主半不可用（404）：不写入、不抛错。
+  const missing = make({ fetchPlan: async () => ({ ok: false, status: 404, json: async () => { throw new Error('not json') } }) })
+  missing.env.dispatchKey('ArrowUp')
+  await settle()
+  check('宿主半 404 时不写入', missing.drafted.length === 0)
+
+  // claimed 时幽灵文本也隐藏。
+  const claimed = setup()
+  const claimedProps = { sessionId: 'c', input: { draft: '', phase: 'claimed' }, inputActions: { setDraft() {} }, session: { sessionId: 'c', running: false } }
+  claimed.ghost.render({ ...claimedProps, input: { draft: '', phase: 'idle' } })
+  await settle()
+  claimed.ghost.flush()
+  check('claimed 时隐藏幽灵文本', claimed.findGhostNode(claimed.ghost.render(claimedProps)) === null)
 }
 
 console.log('\n按 → 采纳（核心验收项）')

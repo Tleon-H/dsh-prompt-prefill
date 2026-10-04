@@ -10,6 +10,8 @@ import {
   buildUserPayload,
   extractRecentTurns,
   lastTurnCompleted,
+  lastTurnState,
+  lastUserText,
   parseCandidate,
   pickFallback,
   redactSecrets,
@@ -238,6 +240,19 @@ console.log('\n工具函数')
   check('truncate 非法上限返回空串', truncate('abc', 0) === '')
 }
 
+console.log('\nlastUserText')
+{
+  const user = (text, kind = 'user') => ({ role: 'user', source: { kind }, content: [{ type: 'text', text }] })
+  const assistant = (text) => ({ role: 'assistant', content: [{ type: 'text', text }] })
+  check('取最后一条用户消息', lastUserText([user('第一句'), assistant('回复'), user('第二句'), assistant('回复')]) === '第二句')
+  check('跳过工具结果', lastUserText([user('真人'), user('工具输出', 'tool'), assistant('回复')]) === '真人')
+  check('保留原文不脱敏', lastUserText([user('key sk-abcdefghijklmnop')]) === 'key sk-abcdefghijklmnop')
+  check('多段文字按行拼接', lastUserText([{ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: 'a' }, { type: 'image' }, { type: 'text', text: 'b' }] }]) === 'a\nb')
+  check('跳过纯空白消息', lastUserText([user('有内容'), user('   ')]) === '有内容')
+  check('旧式事件也能取', lastUserText([{ type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: '事件' }] } }]) === '事件')
+  check('没有用户消息返回 undefined', lastUserText([assistant('x')]) === undefined && lastUserText(undefined) === undefined)
+}
+
 console.log('\nlastTurnCompleted')
 {
   const user = (text) => ({ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text }] })
@@ -250,6 +265,25 @@ console.log('\nlastTurnCompleted')
   check('turn/end error 算没收尾', lastTurnCompleted([{ type: 'assistant/message', data: {} }, { type: 'turn/end', data: { reason: { kind: 'error' } } }]) === false)
   check('turn/end 无 reason 算正常', lastTurnCompleted([{ type: 'turn/end', data: {} }]) === true)
   check('空历史无从判断时放行', lastTurnCompleted([]) === true && lastTurnCompleted(undefined) === true)
+
+  // 回答结束后 DSH 组件以用户角色插入的消息（goal / schedule / 系统注入）不算「没收尾」。
+  const injected = (kind) => ({ role: 'user', source: { kind }, content: [{ type: 'text', text: '注入' }] })
+  check('goal 注入消息不误判', lastTurnCompleted([user('a'), assistant('b'), injected('goal')]) === true)
+  check('schedule 注入消息不误判', lastTurnCompleted([user('a'), assistant('b'), injected('schedule')]) === true)
+  check('system-prompt 注入消息不误判', lastTurnCompleted([user('a'), assistant('b'), injected('system-prompt')]) === true)
+  check('切换模型消息不误判', lastTurnCompleted([user('a'), assistant('b'), injected('model-selection')]) === true)
+  check('压缩上下文消息不误判', lastTurnCompleted([user('a'), assistant('b'), injected('compact-checkpoint')]) === true)
+  check('子任务完成通知不误判', lastTurnCompleted([user('a'), assistant('b'), injected('subagent-settled')]) === true)
+  check('回答提问后没有回复算没收尾', lastTurnCompleted([assistant('b'), injected('user-question-reply')]) === false)
+  check('批准工具后没有回复算没收尾', lastTurnCompleted([assistant('b'), injected('user-approval')]) === false)
+  check('注入消息之前是真人消息仍算没收尾', lastTurnCompleted([assistant('b'), user('c'), injected('goal')]) === false)
+  check('tool 角色算没收尾', lastTurnCompleted([user('a'), { role: 'tool', content: [] }]) === false)
+  check('没有来源的用户消息算没收尾', lastTurnCompleted([assistant('b'), { role: 'user', content: [] }]) === false)
+  check('事件形状的 goal 注入不误判', lastTurnCompleted([
+    { type: 'assistant/message', data: {} },
+    { type: 'user/message', data: { source: { kind: 'goal' }, content: [] } },
+  ]) === true)
+  check('诊断依据说明来源', lastTurnState([assistant('b'), user('c')]).basis === 'user:user', lastTurnState([assistant('b'), user('c')]).basis)
 }
 
 console.log(failures === 0 ? '\n全部通过' : `\n${failures} 项失败`)
