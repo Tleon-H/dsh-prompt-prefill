@@ -1,5 +1,7 @@
 # dsh-prompt-prefill
 
+[![test](https://github.com/Tleon-H/dsh-prompt-prefill/actions/workflows/test.yml/badge.svg)](https://github.com/Tleon-H/dsh-prompt-prefill/actions/workflows/test.yml)
+
 DeepSeek Harness（DSH）桌面端插件，给输入框加两个小功能：
 
 - **→ / Tab：采纳建议的下一句。** Agent 回答完后，输入框里出现一条浅灰色的提示词——根据当前会话最近的对话，猜你接下来最可能想说的话。按 `Tab` 或 `→` 把它填进草稿。
@@ -17,7 +19,9 @@ DeepSeek Harness（DSH）桌面端插件，给输入框加两个小功能：
 └──────────────────────────────────────────────────────────┘
 ```
 
-适用版本：DSH 桌面端 **0.2.0-rc.2**（在这个版本上实测通过）。
+适用版本：DSH 桌面端 **0.2.0-rc.2**（在这个版本上实测通过，其他版本未验证）。
+
+个人维护的小项目，欢迎通过 [issue](https://github.com/Tleon-H/dsh-prompt-prefill/issues) 反馈问题和建议，但不保证及时回复。
 
 ---
 
@@ -25,13 +29,14 @@ DeepSeek Harness（DSH）桌面端插件，给输入框加两个小功能：
 
 ### 安装
 
-推荐从本地目录安装，改代码后不用重新安装（DSH 链接到这个目录，直接运行这里的代码）：
+**方式一：本地目录安装**（想自己改代码时推荐）。DSH 会链接到这个目录、直接运行这里的代码，改完不用重新安装：
 
 ```powershell
-dsh plugin --profile desktop add "E:\SynologyDrive\AIWorkplace\dsh-prompt-prefill"
+git clone https://github.com/Tleon-H/dsh-prompt-prefill.git
+dsh plugin --profile desktop add "<你的目录>\dsh-prompt-prefill"
 ```
 
-也可以从 GitHub 安装。仓库是私有的，需要这台电脑的 Git 已登录 GitHub：
+**方式二：直接从 GitHub 安装**：
 
 ```powershell
 dsh plugin --profile desktop add github:Tleon-H/dsh-prompt-prefill
@@ -43,7 +48,7 @@ dsh plugin --profile desktop add github:Tleon-H/dsh-prompt-prefill
 
 ### 更新
 
-- **本地目录安装**：代码改完后，**等 Synology Drive 同步完成，再完全退出并重开 DSH**。顺序不能反——先重启、后同步，DSH 跑的仍是旧代码。可以用[诊断](#诊断记录)结果里的 `version` 确认新代码是否生效。
+- **本地目录安装**：`git pull` 或改完代码后，**完全退出并重开 DSH**。如果目录通过网盘（如 Synology Drive、OneDrive）在多台电脑间同步，要**等同步完成再重启**——先重启、后同步，DSH 跑的仍是旧代码。可以用[诊断](#诊断记录)结果里的 `version` 确认新代码是否生效。
 - **GitHub 安装**：先 `dsh plugin --profile desktop remove dsh-prompt-prefill`，再重新 `add`。
 
 ### 卸载

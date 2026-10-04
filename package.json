@@ -1,7 +1,7 @@
 {
   "name": "dsh-prompt-prefill",
   "version": "0.4.2",
-  "description": "DeepSeek Harness 插件：在输入框中以灰色幽灵文本预填充一条由当前会话场景动态生成的提示词，按右方向键即可填入草稿。",
+  "description": "DeepSeek Harness 插件：Agent 回答结束后在输入框预填一条灰色的下一句建议，按 Tab 或 → 采纳；输入框为空时按 ↑ 填入上一次发送的内容。",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -26,9 +26,20 @@
     "prompt",
     "composer",
     "ghost-text",
-    "prefill"
+    "prefill",
+    "next-prompt",
+    "prompt-history"
   ],
   "license": "MIT",
+  "author": "Tleon-H (https://github.com/Tleon-H)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Tleon-H/dsh-prompt-prefill.git"
+  },
+  "homepage": "https://github.com/Tleon-H/dsh-prompt-prefill#readme",
+  "bugs": {
+    "url": "https://github.com/Tleon-H/dsh-prompt-prefill/issues"
+  },
   "scripts": {
     "test": "node test/core.test.mjs && node test/host.test.mjs && node test/client.test.mjs"
   },
