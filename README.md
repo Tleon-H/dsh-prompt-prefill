@@ -22,7 +22,7 @@ DeepSeek Harness 桌面端插件：**Agent 回答结束后，在输入框里以�
 
 | 场景 | 行为 |
 | --- | --- |
-| Agent 回答结束、草稿为空 | 自动请求一次，并在输入框内显示灰色提示词 |
+| Agent 回答结束、草稿为空 | 自动请求一次，并在输入框内显示灰色提示词；是否生成以**宿主监听到的 `turn/end`** 为准，同一回合只生成一次 |
 | 只打开或翻看会话 | **不请求**（与 Claude Code 一致，避免白白调用模型） |
 | 回答结束时草稿不为空 | 先不请求，草稿清空后补一次 |
 | 草稿为空且输入框聚焦时按 `Tab` 或 `→` | 提示词经宿主 `setDraft` 写入草稿，**不发送**；撤销行为取决于编辑器实现 |
@@ -36,7 +36,7 @@ DeepSeek Harness 桌面端插件：**Agent 回答结束后，在输入框里以�
 | 输入法组合输入中（`isComposing`） | 不拦截 |
 | Agent 正在回答 | 不请求、不显示 |
 | 输入处于 `submitting` / `adjudicating` / `claimed` | 不生成、不显示、不采纳已有候选，`↑` 也不回填 |
-| 上一轮出错或被中断 | 不请求模型、不显示 |
+| 上一轮出错或被中断 | 不请求模型、不显示（以 `turn/end` 的结束原因为准：`error`、`aborted`、`max-tokens`、`interrupted` 等都跳过） |
 | 模型不可用 / 超时 / 新会话无历史 | 默认不显示；打开 `useFallback` 才显示兜底提示词 |
 | 同一轮生成失败 | 不重试，等下一轮回答结束 |
 | 切换到别的会话再切回 | 之前预填的提示词**保留**，不重新请求；切走期间完成的请求切回后可见。最多保留 50 个会话，超出时清掉最久没看的 |
@@ -68,7 +68,7 @@ dsh-prompt-prefill/
 | 文件 | 用途 |
 | --- | --- |
 | `lib/core.js` | 与 Harness 无关的纯函数。独立出来是为了让最易出错的边界（脱敏、截断、`NONE` 处理、兜底轮换）能被直接测到。 |
-| `lib/index.js` | 宿主半。RPC 同时提供 `method: 'lastSent'`：只读会话历史，返回最后一条真人消息原文，供 `↑` 回填，不调用模型。暴露 `name` / `apply`，经 `ctx.get('webServer')` 注册 `/dsh-prompt-prefill/rpc`；首选会话的 `deriveMessages()` 取最近对话，兼容 `snapshotEvents()`；用 `ctx.get('llm').stream(...)` 生成候选。 |
+| `lib/index.js` | 宿主半。订阅 `session/event` 跟踪每个会话的 `turn/start` / `turn/end`，RPC `method: 'suggestion'` 按回合号按需生成并缓存建议。RPC 同时提供 `method: 'lastSent'`：只读会话历史，返回最后一条真人消息原文，供 `↑` 回填，不调用模型。暴露 `name` / `apply`，经 `ctx.get('webServer')` 注册 `/dsh-prompt-prefill/rpc`；首选会话的 `deriveMessages()` 取最近对话，兼容 `snapshotEvents()`；用 `ctx.get('llm').stream(...)` 生成候选。 |
 | `lib/client.js` | 浏览器半。经 `window.__ModuleLoader__.load` 注册，用 `ctx.slots.inject('conversation.input.overlay', ...)` 把浮层挂进 composer 卡片内部。 |
 | `test/client.test.mjs` | 自带微型 React（真的执行 hooks）与微型 DOM，因此能断言「按 → 确实调用了 `inputActions.setDraft`」。 |
 
@@ -297,13 +297,31 @@ fetch('/dsh-prompt-prefill/rpc',{method:'POST',headers:{'content-type':'applicat
 
 | `result` | 含义 | 处理方向 |
 | --- | --- | --- |
-| `model` | 正常生成 | — |
-| `SKIPPED` | 判定上一轮没有正常结束；`detail` 写明依据的是哪条消息 | 若回答其实正常结束，把 `detail` 发给维护者调整判断规则 |
+| `model` | 正常生成（`trigger: turn-end` 表示由宿主监听的回合结束触发） | — |
+| `NO_TURN` | 浏览器半来要建议，但宿主 8 秒内没有收到新的 `turn/end` | 偶发可忽略；频繁出现说明宿主没收到回合事件，把诊断结果发给维护者 |
+| `SKIPPED` | 上一轮没有正常结束；`detail` 写明 `turn/end` 的结束原因（旧宿主上写明依据的是哪条消息） | 原因是 `error` / `aborted` 等属正常跳过；若回答其实正常结束，把 `detail` 发给维护者 |
 | `NO_CANDIDATE` + 「模型没有给出可用的提示词」 | 模型回了 `NONE` 或空；`detail` 里有正文开头与片段统计 | 只有 `reasoning-*` 片段、正文 0 字时，多半是推理模型把 `maxOutputTokens` 用光了，可调大或在配置里固定一个非推理模型 |
 | `NO_CANDIDATE` + 「生成超时」 | 超过 `timeoutMs` | 调大 `timeoutMs` 或换更快的模型 |
 | `NO_CANDIDATE` + 「请求已取消」 | 生成途中 Agent 又开始回答或切换了会话 | 正常现象 |
 | 记录里**没有**这一次 | 浏览器半没有发出请求：Console 里也看不到「回答结束，开始请求提示词」 | 说明没检测到回答结束，需要进一步排查 |
 
+> 0.4.2：**DSH 不会为模型调用失败抛错**，而是返回 `finish` 片段，`reason` 为
+> `{ kind: 'error', failure: { message, code } }`（包括调用前就被拒绝的 `UNSUPPORTED_REASONING_EFFORT`）。
+> 旧代码把它当成普通结束，于是表现为「正文 0 字、只有 finish、耗时几毫秒」，去掉 `reasoningEffort` 重试的逻辑
+> 也从未触发——不支持关闭思考的模型（例如实测的 `workbuddy/glm-5.3-flash`）因此永远拿不到提示词。
+> 现在把 error finish 转成真正的错误：不支持关闭思考时去掉该参数重试一次；其他错误把错误码与原因写进诊断。
+>
+> 0.4.1：DSH 按范围过滤派发 `session/event`。若宿主一次都没收到某个会话的事件（说明事件没有送到本插件），
+> 回答结束时不再干等 `turn/end`，立刻退回 0.3.1 的做法（按末尾消息判断）。诊断结果的 `eventsReceived`
+> 是宿主总共收到的事件数，为 0 说明事件完全没有送达。
+>
+> 0.4.0：改由**宿主监听回合结束**。宿主订阅 DSH 的 `session/event`，为每个会话记下最近一次
+> `turn/end` 的回合号与结束原因；浏览器半在回答结束时带上「已看过的回合号」来要建议，宿主以 `turn/end`
+> 判断是否正常完成（不再按末尾消息推断），同一回合只生成一次并缓存，新回合开始（`turn/start`）时作废上一轮。
+> 生成是按需的：回合结束只记账，浏览器半来要时才调模型，DSH 里用户看不到的会话（如后台子任务）不会白白花钱。
+> 浏览器半偶尔先于宿主察觉回答结束时，宿主最多等 8 秒让 `turn/end` 到达。宿主没有回合事件时自动退回旧做法。
+> 诊断结果的 `trigger` 字段写明当前使用哪种方式。
+>
 > 0.3.1：DSH 会在回答结束后以用户角色插入切换模型、压缩上下文、goal、schedule、子任务完成等消息。
 > 旧规则把「最后一条是用户角色」一律当成上一轮没收尾，导致正常结束的回答也被跳过。现在只有真人输入、
 > 工具结果、对提问的回答、对工具调用的批准排在最后时才跳过。

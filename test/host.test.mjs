@@ -22,7 +22,9 @@ function makeHarness(options = {}) {
   const warnings = []
   const infos = []
   let route
-  let disposal
+  const disposals = []
+  /** options.events 为 true 时模拟 DSH 的事件总线（ctx.on）。 */
+  const listeners = []
 
   const webServer = {
     register(next) {
@@ -39,9 +41,15 @@ function makeHarness(options = {}) {
       return options.services?.[serviceName]
     },
     effect(factory) {
-      disposal = factory()
+      disposals.push(factory())
     },
     webServer,
+  }
+  if (options.events) {
+    ctx.on = (name, listener) => {
+      listeners.push({ name, listener })
+      return () => {}
+    }
   }
 
   // 既有用例检验兜底轮换本身，因此在测试里显式打开 useFallback；
@@ -51,7 +59,12 @@ function makeHarness(options = {}) {
     warnings,
     infos,
     get route() { return route },
-    dispose: () => disposal?.(),
+    dispose: () => { for (const disposal of disposals.reverse()) disposal?.() },
+    listeners,
+    /** 模拟 DSH 派发一条会话事件。 */
+    emit(sessionId, event) {
+      for (const { name, listener } of listeners) if (name === 'session/event') listener({ id: sessionId }, event)
+    },
   }
 }
 
@@ -398,6 +411,193 @@ console.log('\n诊断记录')
 
   for (let index = 0; index < 25; index += 1) await invoke(none, { sessionId: 's1' })
   check('诊断最多保留 20 条', (await read(none)).recent.length === 20)
+}
+
+console.log('\n模型失败以 finish 片段返回（DSH 的真实行为）')
+{
+  const header = { requestHeader: () => ({ config: { provider: 'workbuddy', model: 'glm-5.3-flash' } }) }
+  const errorFinish = (code, message) => ({ type: 'finish', reason: { kind: 'error', failure: { code, message } } })
+
+  // 复现 Windows 上的现象：模型不支持 reasoningEffort=off，DSH 1ms 内返回 error finish。
+  const seen = []
+  const picky = {
+    stream(options) {
+      seen.push(options.reasoningEffort)
+      return (async function* generate() {
+        if (options.reasoningEffort !== undefined) {
+          yield errorFinish('UNSUPPORTED_REASONING_EFFORT', 'provider "workbuddy" model "glm-5.3-flash" does not support reasoning effort "off"')
+          return
+        }
+        yield { type: 'text-delta', text: '请把方案拆成三步\n' }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      })()
+    },
+  }
+  const h = makeHarness({ config: { useFallback: false }, services: { sessions: fakeSessions(turns('你好', '你好呀'), header), llm: picky } })
+  const reply = await (await invoke(h, { sessionId: 's1' })).reply()
+  check('不支持关闭思考时去掉该参数重试并成功', reply.ok === true && reply.candidate === '请把方案拆成三步', JSON.stringify(reply))
+  check('第一次带 off、重试时不带', seen.length === 2 && seen[0] === 'off' && seen[1] === undefined, JSON.stringify(seen))
+  const entry = (await (await invoke(h, { method: 'diagnostics' })).reply()).recent.at(-1)
+  check('诊断写明已重试', /已去掉 reasoningEffort 重试/.test(entry?.detail ?? ''), entry?.detail)
+
+  // 其他错误：不重试，原因和错误码写进结果与诊断。
+  const auth = { stream: () => (async function* generate() { yield errorFinish('AUTH', 'invalid api key') })() }
+  const h2 = makeHarness({ config: { useFallback: false }, services: { sessions: fakeSessions(turns('你好', '你好呀'), header), llm: auth } })
+  const authReply = await (await invoke(h2, { sessionId: 's1' })).reply()
+  check('其他错误返回失败原因', authReply.ok === false && /invalid api key/.test(authReply.message) && /AUTH/.test(authReply.message), JSON.stringify(authReply))
+  const authEntry = (await (await invoke(h2, { method: 'diagnostics' })).reply()).recent.at(-1)
+  check('诊断写明结束原因与错误', /结束原因 error/.test(authEntry?.detail ?? '') && /AUTH: invalid api key/.test(authEntry?.detail ?? ''), authEntry?.detail)
+
+  // 重试后仍失败：给出第二次的原因。
+  const always = { stream: () => (async function* generate() { yield errorFinish('UNSUPPORTED_REASONING_EFFORT', 'does not support reasoning effort') })() }
+  const h3 = makeHarness({ config: { useFallback: false }, services: { sessions: fakeSessions(turns('你好', '你好呀'), header), llm: always } })
+  const alwaysReply = await (await invoke(h3, { sessionId: 's1' })).reply()
+  check('重试后仍失败时返回失败', alwaysReply.ok === false && /生成失败/.test(alwaysReply.message), JSON.stringify(alwaysReply))
+
+  // 正常结束但没有正文（例如推理把额度用光）：诊断写明结束原因。
+  const empty = { stream: () => (async function* generate() { yield { type: 'reasoning-delta', text: '想了很久' }; yield { type: 'finish', reason: { kind: 'max-tokens' } } })() }
+  const h4 = makeHarness({ config: { useFallback: false }, services: { sessions: fakeSessions(turns('你好', '你好呀'), header), llm: empty } })
+  await invoke(h4, { sessionId: 's1' })
+  const emptyEntry = (await (await invoke(h4, { method: 'diagnostics' })).reply()).recent.at(-1)
+  check('额度用光时诊断写明 max-tokens', /结束原因 max-tokens/.test(emptyEntry?.detail ?? ''), emptyEntry?.detail)
+}
+
+console.log('\n宿主监听回合结束')
+{
+  const header = { requestHeader: () => ({ config: { provider: 'p', model: 'm' } }) }
+  const turnEnd = (turn, kind = 'completed') => ({ type: 'turn/end', data: { turn, reason: { kind } } })
+  const ask = (h, extra = {}) => invoke(h, { method: 'suggestion', sessionId: 's1', afterTurn: -1, waitMs: 0, ...extra })
+  const counting = (text = '请把它改成表格\n') => {
+    const calls = { count: 0 }
+    return { calls, llm: fakeLlm([{ type: 'text-delta', text }], () => { calls.count += 1 }) }
+  }
+
+  const { calls, llm } = counting()
+  const h = makeHarness({ events: true, config: { useFallback: false }, services: { sessions: fakeSessions(turns('你好', '你好呀'), header), llm } })
+  check('订阅了 session/event', h.listeners.some((l) => l.name === 'session/event'))
+  check('注册日志说明由宿主监听', h.infos.some((line) => line.includes('宿主监听回合结束')), JSON.stringify(h.infos))
+
+  const before = await (await ask(h)).reply()
+  check('还没有回合结束时返回 NO_TURN', before.code === 'NO_TURN', JSON.stringify(before))
+  check('只打开会话不调用模型', calls.count === 0)
+
+  h.emit('s1', turnEnd(3))
+  check('回合结束时不立刻调用模型（按需生成）', calls.count === 0)
+  const first = await (await ask(h)).reply()
+  check('正常完成的回合会生成', first.ok === true && first.source === 'model' && first.candidate === '请把它改成表格', JSON.stringify(first))
+  check('结果带上回合号', first.turn === 3, JSON.stringify(first))
+  const again = await (await ask(h)).reply()
+  check('同一回合再要直接用缓存', again.candidate === first.candidate && calls.count === 1, String(calls.count))
+  const seen = await (await ask(h, { afterTurn: 3 })).reply()
+  check('已看过的回合不再返回', seen.code === 'NO_TURN', JSON.stringify(seen))
+
+  const diag = await (await invoke(h, { method: 'diagnostics' })).reply()
+  const generated = diag.recent.find((r) => r.result === 'model')
+  check('诊断记录写明由回合结束触发', generated?.trigger === 'turn-end' && generated?.turn === 3, JSON.stringify(diag.recent))
+  check('诊断说明触发方式', diag.trigger === '宿主监听回合结束' && diag.trackedSessions === 1, JSON.stringify(diag))
+
+  // 结束原因不是 completed：以 DSH 的记录为准跳过，不调用模型。
+  for (const kind of ['error', 'aborted', 'max-tokens', 'interrupted']) {
+    const c = counting()
+    const failed = makeHarness({ events: true, config: { useFallback: false }, services: { sessions: fakeSessions(turns('你好', '你好呀'), header), llm: c.llm } })
+    failed.emit('s1', turnEnd(1, kind))
+    const reply = await (await ask(failed)).reply()
+    check(`turn/end ${kind} 时跳过`, reply.code === 'SKIPPED' && c.calls.count === 0, JSON.stringify(reply))
+    const entry = (await (await invoke(failed, { method: 'diagnostics' })).reply()).recent.at(-1)
+    check(`turn/end ${kind} 的诊断写明原因`, entry?.detail?.includes(kind) === true, JSON.stringify(entry))
+  }
+
+  // 回答结束后 DSH 插入的切换模型等消息不再影响判断：以 turn/end 为准。
+  const injectedTail = [...turns('你好', '你好呀'), { type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: '看起来像没收尾' }] } }]
+  const c2 = counting()
+  const tail = makeHarness({ events: true, config: { useFallback: false }, services: { sessions: fakeSessions(injectedTail, header), llm: c2.llm } })
+  tail.emit('s1', turnEnd(1))
+  const tailReply = await (await ask(tail)).reply()
+  check('有 turn/end completed 时不再按末尾消息推断', tailReply.ok === true && c2.calls.count === 1, JSON.stringify(tailReply))
+
+  // 浏览器半比宿主先察觉回答结束：宿主等 turn/end 到了再处理。
+  const c3 = counting()
+  const early = makeHarness({ events: true, config: { useFallback: false }, services: { sessions: fakeSessions(turns('你好', '你好呀'), header), llm: c3.llm } })
+  // 真实顺序：回合进行中宿主早已收到这个会话的 turn/start 等事件。
+  early.emit('s1', { type: 'turn/start', data: { turn: 1 } })
+  const pending = ask(early, { waitMs: 2000 })
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  early.emit('s2', turnEnd(9))
+  early.emit('s1', turnEnd(1))
+  const earlyReply = await (await pending).reply()
+  check('先来要、后收到 turn/end 也能拿到建议', earlyReply.ok === true && earlyReply.turn === 1, JSON.stringify(earlyReply))
+
+  const timeout = await (await ask(early, { afterTurn: 1, waitMs: 30 })).reply()
+  check('等不到新回合时返回 NO_TURN', timeout.code === 'NO_TURN', JSON.stringify(timeout))
+
+  // 事件没有送到这个会话（DSH 按范围过滤派发）：不干等，立刻退回旧做法。
+  const c5 = counting()
+  const unseen = makeHarness({ events: true, config: { useFallback: false }, services: { sessions: fakeSessions(turns('你好', '你好呀'), header), llm: c5.llm } })
+  unseen.emit('other-session', turnEnd(1))
+  const unseenStarted = Date.now()
+  const unseenReply = await (await ask(unseen, { waitMs: 8000 })).reply()
+  check('事件没送到时立刻退回旧做法生成', unseenReply.ok === true && c5.calls.count === 1, JSON.stringify(unseenReply))
+  check('事件没送到时不干等', Date.now() - unseenStarted < 1000, `${Date.now() - unseenStarted}ms`)
+  const unseenDiag = await (await invoke(unseen, { method: 'diagnostics' })).reply()
+  check('诊断写明收到的事件数', unseenDiag.eventsReceived === 1, JSON.stringify(unseenDiag.eventsReceived))
+  check('诊断写明退回原因', /没有收到这个会话的回合事件/.test(unseenDiag.recent.at(-1)?.detail ?? ''), JSON.stringify(unseenDiag.recent.at(-1)))
+  // 旧做法下仍按末尾消息判断上一轮是否正常结束。
+  const c6 = counting()
+  const unseenUnfinished = makeHarness({ events: true, config: { useFallback: false }, services: { sessions: fakeSessions(turns('你好', '你好呀', '没回复'), header), llm: c6.llm } })
+  const unfinishedReply = await (await ask(unseenUnfinished, { waitMs: 8000 })).reply()
+  check('退回旧做法时仍按末尾消息跳过', unfinishedReply.code === 'SKIPPED' && c6.calls.count === 0, JSON.stringify(unfinishedReply))
+
+  // 新回合开始：上一轮的建议作废，生成到一半的被取消，旧回合不再生成。
+  let release
+  const slowCalls = { count: 0 }
+  const slowLlm = {
+    stream(options) {
+      slowCalls.count += 1
+      return (async function* generate() {
+        await new Promise((resolve) => { release = resolve; options.signal.addEventListener('abort', resolve, { once: true }) })
+        options.signal.throwIfAborted()
+        yield { type: 'text-delta', text: '迟到的建议\n' }
+      })()
+    },
+  }
+  const restart = makeHarness({ events: true, config: { useFallback: false }, services: { sessions: fakeSessions(turns('你好', '你好呀'), header), llm: slowLlm } })
+  restart.emit('s1', turnEnd(1))
+  const inflight = ask(restart)
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  restart.emit('s1', { type: 'turn/start', data: { turn: 2 } })
+  const cancelled = await (await inflight).reply()
+  check('新回合开始时取消上一轮的生成', cancelled.ok === false && /取消/.test(cancelled.message ?? ''), JSON.stringify(cancelled))
+  const stale = await (await ask(restart)).reply()
+  check('新回合进行中不再为旧回合生成', stale.code === 'NO_TURN' && slowCalls.count === 1, `${JSON.stringify(stale)} calls=${slowCalls.count}`)
+  release?.()
+
+  // 只更新内存：怪异的事件不会抛错影响 DSH。
+  let threw = false
+  try {
+    restart.emit('s1', null)
+    restart.emit('s1', { type: 'turn/end' })
+    restart.emit('s1', { type: 'turn/end', data: { turn: 'x' } })
+    for (const { listener } of restart.listeners) listener(undefined, turnEnd(1))
+  } catch {
+    threw = true
+  }
+  check('怪异事件不抛错', threw === false)
+
+  // 跟踪的会话数量有上限。
+  const many = makeHarness({ events: true, config: { useFallback: false }, services: { sessions: fakeSessions(turns('你好', '你好呀'), header), llm } })
+  for (let index = 0; index < 120; index += 1) many.emit(`s${index}`, turnEnd(1))
+  const manyDiag = await (await invoke(many, { method: 'diagnostics' })).reply()
+  check('最多跟踪 100 个会话', manyDiag.trackedSessions === 100, String(manyDiag.trackedSessions))
+
+  // 宿主不支持回合事件时退回旧做法。
+  const c4 = counting()
+  const legacy = makeHarness({ config: { useFallback: false }, services: { sessions: fakeSessions(turns('你好', '你好呀'), header), llm: c4.llm } })
+  const legacyOpen = await (await ask(legacy)).reply()
+  check('旧宿主上只打开会话不生成', legacyOpen.code === 'NO_TURN' && c4.calls.count === 0, JSON.stringify(legacyOpen))
+  const legacyEnd = await (await ask(legacy, { waitMs: 8000 })).reply()
+  check('旧宿主上回答结束时按旧方式生成', legacyEnd.ok === true && c4.calls.count === 1, JSON.stringify(legacyEnd))
+  const legacyDiag = await (await invoke(legacy, { method: 'diagnostics' })).reply()
+  check('旧宿主的诊断说明触发方式', /浏览器半/.test(legacyDiag.trigger), legacyDiag.trigger)
 }
 
 console.log('\n默认不用兜底句（与 Claude Code 一致）')

@@ -1090,6 +1090,39 @@ console.log('\n多会话隔离')
   check('会话 b 显示自己的候选', env.findGhostNode(env.ghost.flush()) !== null)
 }
 
+console.log('\n按宿主的回合号要建议')
+{
+  // 宿主返回回合号；下一次回答结束时只要更新回合的建议。
+  let turn = 4
+  const env = setup({ fetchPlan: async () => ({ json: async () => ({ ok: true, candidate: `第 ${turn} 回合的建议`, source: 'model', turn }) }) })
+  const props = { sessionId: 't', input: { draft: '', phase: 'idle' }, inputActions: { setDraft() {} }, session: { sessionId: 't', running: false } }
+  env.ghost.render(props)
+  await settle()
+  const firstBody = JSON.parse(env.fetchCalls[0]?.init.body ?? '{}')
+  check('请求类型是 suggestion', firstBody.method === 'suggestion', JSON.stringify(firstBody))
+  check('第一次请求不限回合', firstBody.afterTurn === -1, JSON.stringify(firstBody))
+  check('允许宿主等待 turn/end', firstBody.waitMs > 0, JSON.stringify(firstBody))
+  check('显示宿主给的建议', env.findGhostNode(env.ghost.flush())?.children[0] === '第 4 回合的建议')
+
+  turn = 5
+  env.ghost.render({ ...props, session: { sessionId: 't', running: true } })
+  env.ghost.render(props)
+  await settle()
+  const secondBody = JSON.parse(env.fetchCalls[1]?.init.body ?? '{}')
+  check('下一次只要更新回合', secondBody.afterTurn === 4, JSON.stringify(secondBody))
+  check('显示新回合的建议', env.findGhostNode(env.ghost.flush())?.children[0] === '第 5 回合的建议')
+
+  // 跳过（例如上一轮出错）也记下回合号，避免重复处理同一回合。
+  const skipped = setup({ fetchPlan: async () => ({ json: async () => ({ ok: false, code: 'SKIPPED', message: '上一轮没有正常结束', turn: 7 }) }) })
+  const sp = { ...props, sessionId: 'k', session: { sessionId: 'k', running: false } }
+  skipped.ghost.render(sp)
+  await settle()
+  skipped.ghost.render({ ...sp, session: { sessionId: 'k', running: true } })
+  skipped.ghost.render(sp)
+  await settle()
+  check('跳过的回合号也被记下', JSON.parse(skipped.fetchCalls[1]?.init.body ?? '{}').afterTurn === 7, skipped.fetchCalls[1]?.init.body)
+}
+
 console.log('\n切换会话后保留预填内容')
 {
   const base = { input: { draft: '', phase: 'idle' }, inputActions: { setDraft: () => {} } }
