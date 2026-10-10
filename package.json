@@ -44,7 +44,7 @@
     "url": "https://github.com/Tleon-H/dsh-prompt-prefill/issues"
   },
   "scripts": {
-    "test": "node --test \"test/*.test.mjs\"",
+    "test": "node --test test/core.test.mjs test/host.test.mjs test/client.test.mjs",
     "prepublishOnly": "npm test"
   },
   "engines": {
