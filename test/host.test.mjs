@@ -929,5 +929,34 @@ console.log('\n超时与流释放回归')
   check('成功后释放底层流信号', successfulSignal?.aborted === true)
 }
 
+
+console.log('\n生成异常不缓存')
+{
+  // 生成流程里意外抛错（这里让第一次取 llm 服务时抛错）：这次回 INTERNAL 并写诊断，
+  // 但不能把失败缓存在回合上，否则这一回合之后每次来要建议都拿到同一个失败。
+  const header = { requestHeader: () => ({ config: { provider: 'p', model: 'm' } }) }
+  let llmReads = 0
+  const llm = fakeLlm([{ type: 'text-delta', text: '请继续\n' }])
+  const services = {
+    sessions: fakeSessions(turns('你好', '你好呀'), header),
+    get llm() {
+      llmReads += 1
+      if (llmReads === 1) throw new Error('服务暂时不可用')
+      return llm
+    },
+  }
+  const h = makeHarness({ events: true, config: { useFallback: false }, services })
+  h.emit('s1', { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+  const ask = () => invoke(h, { method: 'suggestion', sessionId: 's1', afterTurn: -1, waitMs: 0 })
+
+  const failed = await (await ask()).reply()
+  check('意外异常返回 INTERNAL', failed.ok === false && failed.code === 'INTERNAL' && failed.turn === 1, JSON.stringify(failed))
+  const entry = (await (await invoke(h, { method: 'diagnostics' })).reply()).recent.at(-1)
+  check('意外异常写进诊断', entry?.result === 'INTERNAL' && entry?.detail?.includes('服务暂时不可用') === true, JSON.stringify(entry))
+  check('意外异常写一条警告', h.warnings.some((line) => line.includes('服务暂时不可用')), JSON.stringify(h.warnings))
+  const retried = await (await ask()).reply()
+  check('同一回合再来要时重新生成', retried.ok === true && retried.candidate === '请继续', JSON.stringify(retried))
+}
+
 console.log(failures === 0 ? '\n全部通过' : `\n${failures} 项失败`)
 process.exitCode = failures === 0 ? 0 : 1
