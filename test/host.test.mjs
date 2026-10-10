@@ -571,6 +571,16 @@ console.log('\n宿主监听回合结束')
   check('新回合进行中不再为旧回合生成', stale.code === 'NO_TURN' && slowCalls.count === 1, `${JSON.stringify(stale)} calls=${slowCalls.count}`)
   release?.()
 
+  // 打开兜底句时，被取消的生成也不走兜底：结果没人要，不该推进兜底句的轮换。
+  const restartFallback = makeHarness({ events: true, config: { useFallback: true }, services: { sessions: fakeSessions(turns('你好', '你好呀'), header), llm: slowLlm } })
+  restartFallback.emit('s1', turnEnd(1))
+  const inflightFallback = ask(restartFallback)
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  restartFallback.emit('s1', { type: 'turn/start', data: { turn: 2 } })
+  const cancelledFallback = await (await inflightFallback).reply()
+  check('取消的生成不使用兜底句', cancelledFallback.ok === false && cancelledFallback.code === 'CANCELLED', JSON.stringify(cancelledFallback))
+  release?.()
+
   // 只更新内存：怪异的事件不会抛错影响 DSH。
   let threw = false
   try {
@@ -730,6 +740,21 @@ console.log('\n模型异常与降级')
   check('先带 off、再不带 effort 各调用一次',
     effortCalls.length === 2 && effortCalls[0] === 'off' && effortCalls[1] === undefined,
     JSON.stringify(effortCalls))
+
+  // 只是信息里出现 reasoning 的无关错误：不重试，直接按失败处理。
+  const unrelatedCalls = []
+  const unrelated = {
+    sessions: fakeSessions(turns('你好', '你好呀')),
+    llm: {
+      stream(options) {
+        unrelatedCalls.push(options.reasoningEffort)
+        return (async function* generate() { throw new Error('rate limited while reasoning, try later') })()
+      },
+    },
+    agentDefaultModel: { currentSelection: () => ({ provider: 'p', model: 'm' }) },
+  }
+  await (await invoke(makeHarness({ services: unrelated }), { sessionId: 's1' })).reply()
+  check('信息里只提到 reasoning 的无关错误不重试', unrelatedCalls.length === 1, JSON.stringify(unrelatedCalls))
 
   const noneReply = {
     sessions: fakeSessions(turns('你好', '你好呀')),

@@ -68,6 +68,24 @@ console.log('\nredactSecrets')
   check('隐藏 api_key 赋值', redactSecrets('api_key: supersecretvalue').includes('[已隐藏]'))
   check('隐藏 Bearer', redactSecrets('Authorization: Bearer abcdefghijklmnop').includes('Bearer [已隐藏]'))
   check('不改动普通文本', redactSecrets('今天天气不错') === '今天天气不错')
+  const samples = {
+    'GitHub 令牌': 'token ghp_EXAMPLEabcdefghijklmnopqrstuvwxyz0123',
+    'GitHub 细粒度令牌': 'github_pat_EXAMPLE_abcdefghijklmnopqrstuvwxyz',
+    'AWS 访问密钥': 'id AKIAEXAMPLE00000000Q here',
+    'Slack 令牌': 'xoxb-EXAMPLE-0000000000-abcdef',
+    'Basic 认证头': 'Authorization: Basic EXAMPLEdXNlcjpwYXNz',
+    '中文写法的密码': '数据库密码：EXAMPLEhunter2，记得改',
+    'PEM 私钥': '-----BEGIN RSA PRIVATE KEY-----\nEXAMPLEMIIEow\nEXAMPLEabc\n-----END RSA PRIVATE KEY-----',
+    '缺少结尾行的 PEM 私钥': '贴一下 -----BEGIN PRIVATE KEY-----\nEXAMPLEMIIEow',
+  }
+  for (const [label, sample] of Object.entries(samples)) {
+    const out = redactSecrets(sample)
+    check(`隐藏${label}`, !out.includes('EXAMPLE') && out.includes('[已隐藏]'), out)
+  }
+  const url = redactSecrets('连 postgres://admin:EXAMPLEhunter2@db.local:5432/app 试试')
+  check('隐藏 URL 里的口令并保留用户名和主机', url === '连 postgres://admin:[已隐藏]@db.local:5432/app 试试', url)
+  check('不误伤普通 URL 和英文单词', redactSecrets('see https://example.com/a:b and Basic understanding') === 'see https://example.com/a:b and Basic understanding')
+  check('中文写法保留字段名', redactSecrets('密码：EXAMPLE123') === '密码：[已隐藏]', redactSecrets('密码：EXAMPLE123'))
 
   const credentials = { api_key: 'EXAMPLE_ONLY_key', password: 'EXAMPLE ONLY password', token: 'EXAMPLE_ONLY_token' }
   const redacted = redactSecrets(JSON.stringify(credentials))

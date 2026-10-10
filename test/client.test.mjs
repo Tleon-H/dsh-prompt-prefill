@@ -260,8 +260,11 @@ function setup(options = {}) {
     querySelectorAll: () => [],
   }
 
+  /** options.manualFrames 为 true 时 rAF 回调排队，由 flushFrames() 手动执行。 */
+  const frames = []
+  let computedStyleCalls = 0
   const windowStub = {
-    getComputedStyle: () => ({
+    getComputedStyle: () => (computedStyleCalls += 1, {
       fontFamily: 'sans-serif',
       fontSize: '14px',
       fontWeight: '400',
@@ -282,7 +285,11 @@ function setup(options = {}) {
       borderLeftWidth: '0px',
       boxSizing: 'border-box',
     }),
-    requestAnimationFrame: (callback) => { callback(); return 1 },
+    requestAnimationFrame: (callback) => {
+      if (options.manualFrames !== true) { callback(); return 1 }
+      frames.push(callback)
+      return frames.length
+    },
     cancelAnimationFrame: () => {},
     addEventListener(type, handler) {
       if (type === 'keydown') keydownListeners.add(handler)
@@ -489,6 +496,16 @@ function setup(options = {}) {
       return event
     },
     keydownCount: () => keydownListeners.size,
+    /** 派发一次滚动 / 窗口尺寸变化。 */
+    dispatchScroll() { for (const handler of [...scrollListeners]) handler() },
+    dispatchResize() { for (const handler of [...resizeListeners]) handler() },
+    /** 执行排队中的 rAF 回调，返回执行了几个。 */
+    flushFrames() {
+      const pending = frames.splice(0)
+      for (const callback of pending) callback()
+      return pending.length
+    },
+    computedStyleCalls: () => computedStyleCalls,
   }
 }
 
@@ -1251,6 +1268,34 @@ console.log('\nResizeObserver 同时观察卡片')
   check('观察了输入框本身', env.observedTargets.includes(env.input))
   check('也观察了 composer 卡片', env.observedTargets.includes(env.card),
     `观察了 ${env.observedTargets.length} 个目标`)
+}
+
+console.log('\n滚动与尺寸变化按帧合并')
+{
+  const env = setup({ editable: true, manualFrames: true })
+  const props = {
+    sessionId: 's',
+    input: { draft: '', phase: 'idle' },
+    inputActions: { setDraft: () => {} },
+    session: { sessionId: 's', running: false },
+  }
+  env.ghost.render(props)
+  await settle()
+  env.ghost.flush()
+  env.ghost.render(props)
+  env.flushFrames()
+  const before = env.computedStyleCalls()
+  check('显示时已对齐过浮层', before > 0, String(before))
+
+  for (let index = 0; index < 10; index += 1) env.dispatchScroll()
+  check('连续 10 次滚动只排一帧', env.flushFrames() === 1)
+  check('滚动只更新位置，不重新读样式', env.computedStyleCalls() === before, `${before} → ${env.computedStyleCalls()}`)
+
+  env.dispatchScroll()
+  env.dispatchResize()
+  env.dispatchScroll()
+  check('滚动和尺寸变化也合并成一帧', env.flushFrames() === 1)
+  check('同一帧里有尺寸变化时重新读样式', env.computedStyleCalls() === before + 1, `${before} → ${env.computedStyleCalls()}`)
 }
 
 console.log('\ncontentEditable 输入框（真实 DSH 形态）')
