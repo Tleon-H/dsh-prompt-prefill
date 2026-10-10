@@ -60,6 +60,15 @@ dsh-prompt-prefill/
 npm test
 ```
 
+发布新版本：先在 [CHANGELOG.md](../CHANGELOG.md) 里补一行，再运行
+
+```bash
+npm version patch   # 或 minor / major，会同时改版本号并打 v* 标签
+git push --follow-tags
+```
+
+推送标签后 GitHub Actions 会跑测试并发布到 npm，见 [publish.yml](../.github/workflows/publish.yml)。它用 npm 的 Trusted Publishing，首次使用前要在 npmjs.com 的包设置里把本仓库登记为可信发布者。
+
 界面测试用的是模拟的 React 和 DOM，不能代替在真实 DSH 里验证。改动后建议按下面的清单手动过一遍：
 
 1. 打开一个已有对话的会话：**不应**出现灰字。
