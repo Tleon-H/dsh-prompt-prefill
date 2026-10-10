@@ -21,8 +21,9 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           # Trusted Publishing 需要 npm 11.5.1 以上，Node 24 自带的版本满足要求。
+          # 刻意不设 registry-url：设了之后 setup-node 会写入一条 _authToken 占位凭据，
+          # 它会盖过 OIDC 换来的令牌，导致 npm publish 报 ENEEDAUTH。npm 默认就发到 npmjs.org。
           node-version: 24
-          registry-url: https://registry.npmjs.org
       - name: 检查标签与 package.json 版本一致
         run: |
           version=$(node -p "require('./package.json').version")
