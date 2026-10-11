@@ -4,7 +4,7 @@
 
 ## 工作原理
 
-插件分两半：**后台（宿主半，[lib/index.js](../lib/index.js)）** 在 DSH 的 Node 进程里读会话、调模型；**界面（浏览器半，[lib/client.js](../lib/client.js)）** 在输入框里画灰字、处理按键。两者通过本机接口 `/dsh-prompt-prefill/rpc` 通信。
+插件分两半：**后台（宿主半，[lib/index.js](../lib/index.js)）** 在 DSH 的 Node 进程里读会话、调模型；**界面（浏览器半，[lib/client.js](../lib/client.js)）** 在输入框里画灰字、处理按键。两者通过本机接口 `/dsh-next-prompt/rpc` 通信。
 
 **→ / Tab 的流程**
 
@@ -33,7 +33,7 @@
 5. **回答结束后 DSH 会以用户角色插入消息**（切换模型、压缩上下文、goal、schedule、子任务完成等 `MessageSourceMap` 中的来源）。按「最后一条是不是用户消息」判断上一轮是否完成会误判；现在以 `turn/end` 为准，退路里也只把真人输入、工具结果、对提问的回答、对工具调用的批准当作「没收尾」（0.3.1 / 0.4.0）。
 6. **`session/event` 按范围过滤派发。** 事件不一定送得到插件，所以收不到时必须有退路，不能干等（0.4.1）。
 7. **槽位 `conversation.input.overlay` 的标准 props** 是 `useInput` / `inputActions` / `useSession` / `sessionId`；`SessionSnapshot` 没有 `turnEnds`。
-8. **灰字与 DSH 自带的输入提示重叠。** 显示灰字时给输入框加 `data-dsh-prompt-prefill="on"`，用样式隐藏 `[data-composer-placeholder]` 和 `p:last-child:after`，收起时摘掉。
+8. **灰字与 DSH 自带的输入提示重叠。** 显示灰字时给输入框加 `data-dsh-next-prompt="on"`，用样式隐藏 `[data-composer-placeholder]` 和 `p:last-child:after`，收起时摘掉。
 9. **发给模型的消息用 `RequestUserInput` 形状**（`{ role: 'user', content: [...] }`，不带 `id` 和 `source`）；`MessageSourceMap` 里没有 `plugin` 这个来源。
 
 ---
@@ -41,7 +41,7 @@
 ## 文件结构与测试
 
 ```
-dsh-prompt-prefill/
+dsh-next-prompt/
 ├── package.json        插件清单：入口、exports、dsh 字段（bundle 补丁与浏览器半）
 ├── cordis.patch.yml    profile 补丁：插件行与全部配置项（含中文注释）
 ├── lib/

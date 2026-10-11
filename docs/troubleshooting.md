@@ -5,7 +5,7 @@
 ## 一点反应都没有（↑ 也不管用）
 
 1. 确认已经**完全退出并重开** DSH，且重开时代码已经同步完成。
-2. 按 `Ctrl+Shift+I` 打开开发者工具，切到 **Console**，搜索 `dsh-prompt-prefill`：
+2. 按 `Ctrl+Shift+I` 打开开发者工具，切到 **Console**，搜索 `dsh-next-prompt`：
    - 「RPC 路由不存在（404）」：插件的后台部分没加载，确认插件已启用（`dsh plugin --profile desktop list`）并重启；
    - 什么都搜不到：插件的界面部分没加载，同样检查插件是否启用。
 
@@ -26,13 +26,13 @@
 
 ## 诊断记录
 
-插件会记下最近 20 次生成的结果（只在内存里，重启清空），每次也写一行后台日志（前缀 `dsh-prompt-prefill: 生成`）。在 DSH 的开发者工具 Console 里运行：
+插件会记下最近 20 次生成的结果（只在内存里，重启清空），每次也写一行后台日志（前缀 `dsh-next-prompt: 生成`）。在 DSH 的开发者工具 Console 里运行：
 
 ```js
-fetch('/dsh-prompt-prefill/rpc',{method:'POST',headers:{'content-type':'application/json'},body:'{"method":"diagnostics"}'}).then(r=>r.json()).then(d=>{console.log(d.version,d.trigger,'收到事件',d.eventsReceived);console.table(d.recent)})
+fetch('/dsh-next-prompt/rpc',{method:'POST',headers:{'content-type':'application/json'},body:'{"method":"diagnostics"}'}).then(r=>r.json()).then(d=>{console.log(d.version,d.trigger,'收到事件',d.eventsReceived);console.table(d.recent)})
 ```
 
-也可以让本机的其他工具向 `/dsh-prompt-prefill/rpc` 发送 POST 请求 `{"method":"diagnostics"}`。返回内容：
+也可以让本机的其他工具向 `/dsh-next-prompt/rpc` 发送 POST 请求 `{"method":"diagnostics"}`。返回内容：
 
 | 字段 | 含义 |
 | --- | --- |

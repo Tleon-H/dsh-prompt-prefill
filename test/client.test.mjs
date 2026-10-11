@@ -431,7 +431,7 @@ function setup(options = {}) {
       if (node.props.className === 'dsh-pp-ghost') {
         element.className = 'dsh-pp-ghost'
         element.textContent = node.children?.[0] ?? ''
-        element.dataset.dshPromptPrefill = 'ghost'
+        element.dataset.dshNextPrompt = 'ghost'
       }
       // 保持同一宿主节点的身份；真实 React 不会每次渲染都替换 DOM。
       node.props.ref.current ??= element
@@ -520,13 +520,13 @@ console.log('加载契约')
 {
   const env = setup()
   check('加载了一个模块', env.loaded.length === 1, String(env.loaded.length))
-  check('模块 id 是包名', env.loaded[0]?.id === 'dsh-prompt-prefill', String(env.loaded[0]?.id))
-  check('导出插件名', env.plugin.name === 'dsh-prompt-prefill-client', String(env.plugin.name))
+  check('模块 id 是包名', env.loaded[0]?.id === 'dsh-next-prompt', String(env.loaded[0]?.id))
+  check('导出插件名', env.plugin.name === 'dsh-next-prompt-client', String(env.plugin.name))
   check('声明注入 slots', Array.isArray(env.plugin.inject) && env.plugin.inject.includes('slots'))
   check('导出 apply', typeof env.plugin.apply === 'function')
   check('注册进 conversation.input.overlay', env.injectedSlots[0] === 'conversation.input.overlay', JSON.stringify(env.injectedSlots))
   check('注册了一个组件', env.registrations.length === 1, String(env.registrations.length))
-  check('注册项带自有 id', env.registrations[0]?.registration?.id === 'prompt-prefill')
+  check('注册项带自有 id', env.registrations[0]?.registration?.id === 'next-prompt')
   check('注入了样式标签', env.styleTags.length === 1, String(env.styleTags.length))
   check('样式是灰色幽灵文本风格', env.styleTags[0]?.textContent?.includes('dsh-pp-ghost') === true)
   check('样式使用主题三级文字色', env.styleTags[0]?.textContent?.includes('--dsw-alias-label-tertiary') === true)
@@ -574,7 +574,7 @@ console.log('\n候选生成与展示')
   let tree = env.ghost.render(props)
   check('首次渲染还没有候选', env.findGhostNode(tree) === null)
   check('发起了 RPC 请求', env.fetchCalls.length === 1, String(env.fetchCalls.length))
-  check('请求打到插件自己的路径', env.fetchCalls[0]?.url === '/dsh-prompt-prefill/rpc', String(env.fetchCalls[0]?.url))
+  check('请求打到插件自己的路径', env.fetchCalls[0]?.url === '/dsh-next-prompt/rpc', String(env.fetchCalls[0]?.url))
 
   const body = JSON.parse(env.fetchCalls[0].init.body)
   check('请求携带 sessionId', body.sessionId === 'session-1', JSON.stringify(body))
@@ -586,7 +586,7 @@ console.log('\n候选生成与展示')
   check('候选到达后渲染幽灵文本', node !== null)
   check('幽灵文本内容是候选提示词', node?.children?.[0] === '请继续，并说明判断依据', JSON.stringify(node?.children))
   check('幽灵文本对无障碍隐藏', node?.props?.['aria-hidden'] === 'true')
-  check('幽灵文本带定位标记', node?.props?.['data-dsh-prompt-prefill'] === 'ghost')
+  check('幽灵文本带定位标记', node?.props?.['data-dsh-next-prompt'] === 'ghost')
 }
 
 console.log('\n通过 ctx.get 取 slots（与 dsh-prompt-for-me 一致）')
@@ -631,7 +631,7 @@ console.log('\nHarness 原生内联建议（offerSuggestion）')
   const nativeTab = env.dispatchKey('Tab')
   check('原生模式不拦截 → 与 Tab（交给 Harness）',
     drafted.length === 0 && !nativeRight.defaultPrevented && !nativeTab.defaultPrevented, JSON.stringify(drafted))
-  check('原生模式不抑制原生 placeholder', env.input.getAttribute('data-dsh-prompt-prefill') === null)
+  check('原生模式不抑制原生 placeholder', env.input.getAttribute('data-dsh-next-prompt') === null)
 
   const id = offered[0]?.id
   env.ghost.render(props({ draft: '', phase: 'idle', suggestion: { id, text: offered[0]?.text } }))
@@ -1406,15 +1406,15 @@ console.log('\n自带输入提示的抑制（防叠字）')
   env.ghost.render(props)
   await settle()
   env.ghost.render(props)
-  check('展示时给输入框打上抑制标记', env.input.getAttribute('data-dsh-prompt-prefill') === 'on',
-    String(env.input.getAttribute('data-dsh-prompt-prefill')))
+  check('展示时给输入框打上抑制标记', env.input.getAttribute('data-dsh-next-prompt') === 'on',
+    String(env.input.getAttribute('data-dsh-next-prompt')))
   check('样式表按标记隐藏自带 placeholder', env.styleTags[0]?.textContent?.includes('[data-composer-placeholder]') === true)
   check('样式表同时清掉 :after 提示', env.styleTags[0]?.textContent?.includes('p:last-child:after') === true)
 
   const hidden = setup({ editable: true })
   hidden.ghost.render({ ...props, session: { sessionId: 's', running: true } })
-  check('未展示时不留抑制标记', hidden.input.getAttribute('data-dsh-prompt-prefill') === null,
-    String(hidden.input.getAttribute('data-dsh-prompt-prefill')))
+  check('未展示时不留抑制标记', hidden.input.getAttribute('data-dsh-next-prompt') === null,
+    String(hidden.input.getAttribute('data-dsh-next-prompt')))
 }
 
 console.log('\n锁定、取消、卸载与共享状态回归')
@@ -1458,7 +1458,7 @@ console.log('\n锁定、取消、卸载与共享状态回归')
   await settle()
   unloaded.ghost.render(props)
   unloaded.ghost.unmount()
-  check('ref 被摘掉后卸载仍恢复原生 placeholder', unloaded.input.getAttribute('data-dsh-prompt-prefill') === null)
+  check('ref 被摘掉后卸载仍恢复原生 placeholder', unloaded.input.getAttribute('data-dsh-next-prompt') === null)
   check('卸载后没有键盘监听残留', unloaded.keydownCount() === 0)
 
   const replayed = setup()
@@ -1479,12 +1479,12 @@ console.log('\n锁定、取消、卸载与共享状态回归')
   check('第二个实例也收到候选更新', shared.findGhostNode(other.flush()) !== null)
   check('同会话多实例只生成一次', shared.fetchCalls.length === 1)
   shared.ghost.unmount()
-  check('一个实例卸载不清掉其他实例的 placeholder 标记', shared.input.getAttribute('data-dsh-prompt-prefill') === 'on')
+  check('一个实例卸载不清掉其他实例的 placeholder 标记', shared.input.getAttribute('data-dsh-next-prompt') === 'on')
   check('一个实例卸载不清掉其他实例的候选', shared.findGhostNode(other.flush()) !== null)
   shared.dispatchKey('Escape')
   check('剩余实例仍可关闭候选', shared.findGhostNode(other.flush()) === null)
   other.unmount()
-  check('最后实例卸载恢复 placeholder', shared.input.getAttribute('data-dsh-prompt-prefill') === null)
+  check('最后实例卸载恢复 placeholder', shared.input.getAttribute('data-dsh-next-prompt') === null)
 }
 
 console.log(failures === 0 ? '\n全部通过' : `\n${failures} 项失败`)

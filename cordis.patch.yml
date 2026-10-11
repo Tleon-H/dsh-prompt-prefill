@@ -1,10 +1,10 @@
-# dsh-prompt-prefill bundle patch.
+# dsh-next-prompt bundle patch.
 # 一行 host 插件，注册到当前 profile。安装命令：
-#   dsh plugin --profile desktop add ./dsh-prompt-prefill
+#   dsh plugin --profile desktop add ./dsh-next-prompt
 # 下面每一项都是可选的，括号里是默认值。
 - insert:
-    - id: prompt-prefill
-      name: dsh-prompt-prefill
+    - id: next-prompt
+      name: dsh-next-prompt
       config:
         # 总开关。关闭后不再请求模型，也不再显示幽灵文本。
         enabled: true
