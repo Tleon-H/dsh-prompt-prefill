@@ -2,6 +2,8 @@
 #   npm version patch && git push --follow-tags
 # 使用 npm 的 Trusted Publishing（OIDC），仓库里不需要保存 npm 令牌；
 # 首次使用前要在 npmjs.com 的包设置里把本仓库和这个 workflow 登记为可信发布者。
+# npm 只允许给已存在的包登记可信发布者，所以新包名（如 0.5.0 改名后的 dsh-next-prompt）
+# 的第一个版本要先在本地 npm login 后手动 npm publish --access public，登记完再用这个 workflow。
 name: publish
 
 on:
