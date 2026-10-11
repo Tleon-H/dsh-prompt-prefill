@@ -200,14 +200,14 @@ function fakeLegacySessions(events, session = {}) {
 }
 
 console.log('插件契约')
-check('插件名正确', name === 'dsh-prompt-prefill', name)
-check('RPC 路径已导出', __internals.RPC_PATH === '/dsh-prompt-prefill/rpc')
+check('插件名正确', name === 'dsh-next-prompt', name)
+check('RPC 路径已导出', __internals.RPC_PATH === '/dsh-next-prompt/rpc')
 
 console.log('\n路由注册')
 {
   const harness = makeHarness()
   check('注册了一个 exact 路由', harness.route?.kind === 'exact', harness.route?.kind)
-  check('路由路径正确', harness.route?.path === '/dsh-prompt-prefill/rpc')
+  check('路由路径正确', harness.route?.path === '/dsh-next-prompt/rpc')
   check('注册了 info 日志', harness.infos.length === 1, JSON.stringify(harness.infos))
 
   const noServer = { logger: { warn: (m) => noServer.logged.push(m) }, logged: [] }
@@ -238,7 +238,7 @@ console.log('\n路由注册')
       return serviceName === 'webServer' ? { register: (route) => { routes.push(route); return () => {} } } : undefined
     },
   })
-  check('webServer 就绪后注册路由', routes.length === 1 && routes[0].path === '/dsh-prompt-prefill/rpc')
+  check('webServer 就绪后注册路由', routes.length === 1 && routes[0].path === '/dsh-next-prompt/rpc')
 }
 
 console.log('\n请求校验')

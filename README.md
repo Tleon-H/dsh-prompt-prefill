@@ -1,9 +1,9 @@
-# dsh-prompt-prefill
+# dsh-next-prompt
 
 **简体中文** | [English](README.en.md)
 
-[![npm](https://img.shields.io/npm/v/dsh-prompt-prefill)](https://www.npmjs.com/package/dsh-prompt-prefill)
-[![test](https://github.com/Tleon-H/dsh-prompt-prefill/actions/workflows/test.yml/badge.svg)](https://github.com/Tleon-H/dsh-prompt-prefill/actions/workflows/test.yml)
+[![npm](https://img.shields.io/npm/v/dsh-next-prompt)](https://www.npmjs.com/package/dsh-next-prompt)
+[![test](https://github.com/Tleon-H/dsh-next-prompt/actions/workflows/test.yml/badge.svg)](https://github.com/Tleon-H/dsh-next-prompt/actions/workflows/test.yml)
 
 DeepSeek Harness（DSH）桌面端插件，给输入框加两个小功能：
 
@@ -12,20 +12,22 @@ DeepSeek Harness（DSH）桌面端插件，给输入框加两个小功能：
 
 两者都**只填进输入框，不会自动发送**。
 
+> 本插件原名 `dsh-prompt-prefill`，0.5.0 起改名为 `dsh-next-prompt`。装过旧版的话，先 `dsh plugin --profile desktop remove dsh-prompt-prefill`，再按下面的方法安装新版。
+
 适用版本：DSH 桌面端 **0.2.0-rc.2**（其他版本未验证）。
 
 ## 安装
 
 ```powershell
-dsh plugin --profile desktop add dsh-prompt-prefill
+dsh plugin --profile desktop add dsh-next-prompt
 ```
 
 装完后**完全退出 DSH（包括托盘图标）再重新打开**。安装前最好也先退出 DSH，否则命令会等待它释放文件锁。
 
-- 想用仓库最新代码：`dsh plugin --profile desktop add github:Tleon-H/dsh-prompt-prefill`
+- 想用仓库最新代码：`dsh plugin --profile desktop add github:Tleon-H/dsh-next-prompt`
 - 用网页版 DSH：把 `--profile desktop` 换成你自己的 profile（通常是 `--profile web`）
 - 更新：先 `remove` 再重新 `add`，然后重启 DSH
-- 卸载：`dsh plugin --profile desktop remove dsh-prompt-prefill`
+- 卸载：`dsh plugin --profile desktop remove dsh-next-prompt`
 
 ## 用法
 
@@ -68,7 +70,7 @@ dsh plugin --profile desktop add dsh-prompt-prefill
 - [开发者文档](docs/development.md)：工作原理、踩过的坑、测试
 - [更新日志](CHANGELOG.md)
 
-个人维护的小项目，欢迎通过 [issue](https://github.com/Tleon-H/dsh-prompt-prefill/issues) 反馈，但不保证及时回复。
+个人维护的小项目，欢迎通过 [issue](https://github.com/Tleon-H/dsh-next-prompt/issues) 反馈，但不保证及时回复。
 
 ## License
 

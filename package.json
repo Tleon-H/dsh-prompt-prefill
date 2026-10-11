@@ -1,6 +1,6 @@
 {
-  "name": "dsh-prompt-prefill",
-  "version": "0.4.2",
+  "name": "dsh-next-prompt",
+  "version": "0.5.0",
   "description": "DeepSeek Harness 插件：Agent 回答结束后在输入框预填一条灰色的下一句建议，按 Tab 或 → 采纳；输入框为空时按 ↑ 填入上一次发送的内容。",
   "type": "module",
   "main": "lib/index.js",
@@ -30,6 +30,7 @@
     "composer",
     "ghost-text",
     "prefill",
+    "dsh-prompt-prefill",
     "next-prompt",
     "prompt-history"
   ],
@@ -37,11 +38,11 @@
   "author": "Tleon-H (https://github.com/Tleon-H)",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Tleon-H/dsh-prompt-prefill.git"
+    "url": "git+https://github.com/Tleon-H/dsh-next-prompt.git"
   },
-  "homepage": "https://github.com/Tleon-H/dsh-prompt-prefill#readme",
+  "homepage": "https://github.com/Tleon-H/dsh-next-prompt#readme",
   "bugs": {
-    "url": "https://github.com/Tleon-H/dsh-prompt-prefill/issues"
+    "url": "https://github.com/Tleon-H/dsh-next-prompt/issues"
   },
   "scripts": {
     "test": "node --test test/core.test.mjs test/host.test.mjs test/client.test.mjs",

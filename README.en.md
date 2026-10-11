@@ -1,9 +1,9 @@
-# dsh-prompt-prefill
+# dsh-next-prompt
 
 [简体中文](README.md) | **English**
 
-[![npm](https://img.shields.io/npm/v/dsh-prompt-prefill)](https://www.npmjs.com/package/dsh-prompt-prefill)
-[![test](https://github.com/Tleon-H/dsh-prompt-prefill/actions/workflows/test.yml/badge.svg)](https://github.com/Tleon-H/dsh-prompt-prefill/actions/workflows/test.yml)
+[![npm](https://img.shields.io/npm/v/dsh-next-prompt)](https://www.npmjs.com/package/dsh-next-prompt)
+[![test](https://github.com/Tleon-H/dsh-next-prompt/actions/workflows/test.yml/badge.svg)](https://github.com/Tleon-H/dsh-next-prompt/actions/workflows/test.yml)
 
 A DeepSeek Harness (DSH) desktop plugin that adds two small features to the input box:
 
@@ -12,20 +12,22 @@ A DeepSeek Harness (DSH) desktop plugin that adds two small features to the inpu
 
 Both only fill the input box. **Nothing is ever sent automatically.**
 
+> This plugin was called `dsh-prompt-prefill` before 0.5.0. If you installed the old one, run `dsh plugin --profile desktop remove dsh-prompt-prefill` first, then install as below.
+
 Tested on DSH desktop **0.2.0-rc.2** (other versions are untested).
 
 ## Install
 
 ```powershell
-dsh plugin --profile desktop add dsh-prompt-prefill
+dsh plugin --profile desktop add dsh-next-prompt
 ```
 
 After installing, **fully quit DSH (including the tray icon) and reopen it**. It is best to quit DSH before installing too, otherwise the command waits for DSH to release its file lock.
 
-- Latest code from the repository: `dsh plugin --profile desktop add github:Tleon-H/dsh-prompt-prefill`
+- Latest code from the repository: `dsh plugin --profile desktop add github:Tleon-H/dsh-next-prompt`
 - Web version of DSH: replace `--profile desktop` with your own profile (usually `--profile web`)
 - Update: `remove` and `add` again, then restart DSH
-- Uninstall: `dsh plugin --profile desktop remove dsh-prompt-prefill`
+- Uninstall: `dsh plugin --profile desktop remove dsh-next-prompt`
 
 ## Usage
 
@@ -68,7 +70,7 @@ Only the text of the last few messages is sent to the model. Common key and toke
 - [Developer notes](docs/development.md): how it works, pitfalls, tests
 - [Changelog](CHANGELOG.md)
 
-This is a small personal project. Feedback via [issues](https://github.com/Tleon-H/dsh-prompt-prefill/issues) is welcome, but replies are not guaranteed.
+This is a small personal project. Feedback via [issues](https://github.com/Tleon-H/dsh-next-prompt/issues) is welcome, but replies are not guaranteed.
 
 ## License
 
